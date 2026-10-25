@@ -18935,14 +18935,6 @@ if _nav == '🗺️ MCP VISIT':
 
     # ===== BẢNG 1: MCP gốc — DS MTD theo điều kiện lọc SP (nếu có) =====
     df_total_show = df_total_f.copy()
-    # Giới hạn render để giảm lag (vẫn tải CSV full qua nút tải nếu có)
-    _MCP_MAX_ROWS = 300
-    if len(df_total_show) > _MCP_MAX_ROWS:
-      st.caption(
-          f'⚡ Hiển thị {_MCP_MAX_ROWS:,}/{len(df_total_show):,} dòng để App mượt — '
-          f'dùng bộ lọc Mã/Tên KH để thu hẹp.'
-      )
-      df_total_show = df_total_show.head(_MCP_MAX_ROWS)
 
     # Xác định cột mã CH để map DS từ chi tiết
     _ma_total = d_ma if d_ma and d_ma in df_total_show.columns else find_col(
@@ -19068,7 +19060,21 @@ if _nav == '🗺️ MCP VISIT':
     st.query_params['mcp_cols'] = ','.join(selected_mcp_cols)
     if not selected_mcp_cols:
       selected_mcp_cols = all_cols_mcp
-    render_mbs_data_table(df_show, selected_mcp_cols)
+    # HTML quá nhiều dòng → trình duyệt trắng khi cuộn; dùng dataframe ảo hóa
+    _cols_ok = [c for c in selected_mcp_cols if c in df_show.columns]
+    if len(df_show) > 800:
+      st.caption(
+          f'⚡ {len(df_show):,} dòng — hiển thị dạng bảng ảo hóa (cuộn mượt). '
+          f'Lọc Mã/Tên KH để xem chi tiết HTML.'
+      )
+      st.dataframe(
+          df_show[_cols_ok] if _cols_ok else df_show,
+          use_container_width=True,
+          height=480,
+          hide_index=True,
+      )
+    else:
+      render_mbs_data_table(df_show, selected_mcp_cols)
     _ma_col = col_ma if col_ma and col_ma in df_f.columns else (
         'Mã CH' if 'Mã CH' in df_f.columns else None
     )
