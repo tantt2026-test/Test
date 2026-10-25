@@ -17207,10 +17207,24 @@ if _nav == '📊 BÁO CÁO KPI':
     df_off = pd.DataFrame()
     df_on = pd.DataFrame()
     try:
-      sales_hist = load_weekly_sales()
-      df_off, df_on = build_weekly_preview(
-          mcp, sales_hist, df_rpt=df, filter_nv=filter_nv
+      try:
+        _mk_w = get_month_key()
+      except Exception:
+        _mk_w = st.session_state.get('report_month_key', 'Thang10')
+      _fnv_w = (
+          '||'.join([str(x) for x in filter_nv]) if isinstance(filter_nv, list)
+          else (str(filter_nv) if filter_nv else '__ALL__')
       )
+      _wk = f'weekly_prev_{_mk_w}_{_fnv_w}_{report_date}'
+      if _wk in st.session_state and not st.session_state.get('_force_reload'):
+        df_off, df_on, sales_hist = st.session_state[_wk]
+      else:
+        with st.spinner('Đang tính Weekly Review (lần đầu sẽ chậm hơn)...'):
+          sales_hist = load_weekly_sales()
+          df_off, df_on = build_weekly_preview(
+              mcp, sales_hist, df_rpt=df, filter_nv=filter_nv
+          )
+          st.session_state[_wk] = (df_off, df_on, sales_hist)
     except Exception as e:
       st.error('Lỗi chạy Weekly Preview: ' + str(e))
       st.exception(e)
