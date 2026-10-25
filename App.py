@@ -727,24 +727,68 @@ def load_brand_data():
 
 
 @st.cache_data(ttl=600)
-def load_visit_schedule():
-  """File Danh sách lịch viếng thăm (upload lên data/)."""
-  candidates = [
-      VISIT_SCHED_PATH,
-      os.path.join(get_data_dir(), 'DanhSachLichViengTham.xlsx'),
-      os.path.join(get_data_dir(), 'DanhSachLichViengTham.xls'),
-      'DanhSachLichViengTham.xlsx',
-  ]
-  # Tìm file gần đúng tên
-  if os.path.isdir(get_data_dir()):
-    for f in os.listdir(get_data_dir()):
-      fl = f.lower().replace(' ', '')
-      if 'lichviengtham' in fl or 'viengtham' in fl or 'danhsachlich' in fl:
-        candidates.insert(0, os.path.join(get_data_dir(), f))
+@st.cache_data(ttl=600, show_spinner=False)
+def load_visit_schedule(_month_key='Thang10'):
+  """Tìm lịch VT ở data/ThangXX và fallback data/ root."""
+  try:
+    _refresh_paths()
+  except Exception:
+    pass
+
+  def _match_name(fn):
+    fl = str(fn).lower().replace(' ', '').replace('_', '')
+    for a, b in [
+        ('ế', 'e'), ('ễ', 'e'), ('ẹ', 'e'), ('è', 'e'), ('é', 'e'),
+        ('à', 'a'), ('á', 'a'), ('ả', 'a'), ('ã', 'a'), ('ạ', 'a'),
+        ('ư', 'u'), ('ơ', 'o'), ('ô', 'o'),
+    ]:
+      fl = fl.replace(a, b)
+    keys = ['lichviengtham', 'viengtham', 'danhsachlich', 'lichvt']
+    return any(k in fl for k in keys) and fl.endswith(('.xlsx', '.xls', '.xlsm'))
+
+  search_dirs = []
+  try:
+    ddir = get_data_dir()
+    if ddir:
+      search_dirs.append(ddir)
+  except Exception:
+    pass
+  if os.path.isdir('data') and 'data' not in search_dirs:
+    search_dirs.append('data')
+  search_dirs.append('.')
+
+  candidates = []
+  for d in search_dirs:
+    if not os.path.isdir(d):
+      continue
+    for name in [
+        'DanhSachLichViengTham.xlsx',
+        'DanhSachLichViengTham.xls',
+        'DanhSachLichViengTham.xlsm',
+    ]:
+      candidates.append(os.path.join(d, name))
+    try:
+      for f in os.listdir(d):
+        if _match_name(f):
+          candidates.insert(0, os.path.join(d, f))
+    except Exception:
+      pass
+
+  seen = set()
+  uniq = []
   for p in candidates:
-    if os.path.exists(p):
+    if p not in seen:
+      seen.add(p)
+      uniq.append(p)
+
+  for p in uniq:
+    if not os.path.isfile(p):
+      continue
+    for hdr in (2, 0, 1):
       try:
-        df = pd.read_excel(p, header=2)
+        df = pd.read_excel(p, header=hdr)
+        if df is None or df.empty:
+          continue
         if 'Ngày lịch VT' in df.columns:
           df['_plan_date'] = pd.to_datetime(
               df['Ngày lịch VT'], dayfirst=True, errors='coerce'
@@ -754,8 +798,8 @@ def load_visit_schedule():
               df['Ngày VT thực tế'], dayfirst=True, errors='coerce'
           )
         return df
-      except Exception as e:
-        st.warning(f'Không đọc được file lịch VT ({p}): {e}')
+      except Exception:
+        continue
   return pd.DataFrame()
 
 
@@ -14502,8 +14546,13 @@ def _lazy_combo(month_key):
 
 def _lazy_visit(month_key):
   sk = f'lazy_visit_{month_key}'
-  if sk not in st.session_state:
-    st.session_state[sk] = load_visit_schedule()
+  cur = st.session_state.get(sk)
+  if cur is None or (hasattr(cur, 'empty') and cur.empty):
+    try:
+      _refresh_paths()
+    except Exception:
+      pass
+    st.session_state[sk] = load_visit_schedule(str(month_key))
   return st.session_state[sk]
 
 df, mcp = _ensure_core_data(_mk)
@@ -16123,10 +16172,32 @@ if _nav == '📊 BÁO CÁO KPI':
 
   elif selected_kpi == 'PERFORMANCE':
     set_color_moc_for_kpi('SUMMARY')
-    if df_visit_sched is None or df_visit_sched.empty:
+    try:
+      _mk_p = get_month_key()
+    except Exception:
+      _mk_p = st.session_state.get('report_month_key', 'Thang10')
+    try:
+      _refresh_paths()
+    except Exception:
+      pass
+    # Xóa cache rỗng nếu có
+    for _k in list(st.session_state.keys()):
+      if str(_k).startswith('lazy_visit'):
+        _v = st.session_state.get(_k)
+        if _v is None or (hasattr(_v, 'empty') and _v.empty):
+          try:
+            del st.session_state[_k]
+          except Exception:
+            pass
+    try:
+      load_visit_schedule.clear()
+    except Exception:
+      pass
+    df_visit_sched = load_visit_schedule(_mk_p)
+    if df_visit_sched is None or getattr(df_visit_sched, 'empty', True):
       st.warning(
-          '⚠️ Chưa có file **DanhSachLichViengTham.xlsx** trong thư mục `data/`. '
-          'Upload file lịch viếng thăm lên GitHub rồi bấm **Xóa Cache & Reload**.'
+          '⚠️ Không tìm thấy **DanhSachLichViengTham.xlsx** trong `data/Thang10/` '
+          'hoặc `data/`. Kiểm tra tên file trên GitHub rồi **Xóa Cache & Reload**.'
       )
     else:
       df_perf, title_perf = build_performance_report(
@@ -18864,6 +18935,14 @@ if _nav == '🗺️ MCP VISIT':
 
     # ===== BẢNG 1: MCP gốc — DS MTD theo điều kiện lọc SP (nếu có) =====
     df_total_show = df_total_f.copy()
+    # Giới hạn render để giảm lag (vẫn tải CSV full qua nút tải nếu có)
+    _MCP_MAX_ROWS = 300
+    if len(df_total_show) > _MCP_MAX_ROWS:
+      st.caption(
+          f'⚡ Hiển thị {_MCP_MAX_ROWS:,}/{len(df_total_show):,} dòng để App mượt — '
+          f'dùng bộ lọc Mã/Tên KH để thu hẹp.'
+      )
+      df_total_show = df_total_show.head(_MCP_MAX_ROWS)
 
     # Xác định cột mã CH để map DS từ chi tiết
     _ma_total = d_ma if d_ma and d_ma in df_total_show.columns else find_col(
