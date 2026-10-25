@@ -14414,7 +14414,17 @@ st.markdown(
 col_reload, col_empty = st.columns([2, 5])
 with col_reload:
   if st.button('🔄 Xóa Cache & Reload Dữ Liệu'):
-    st.cache_data.clear()
+    try:
+      st.cache_data.clear()
+    except Exception:
+      pass
+    for _k in list(st.session_state.keys()):
+      if str(_k).startswith('prep_') or str(_k).startswith('lazy_'):
+        try:
+          del st.session_state[_k]
+        except Exception:
+          pass
+    st.session_state['_force_reload'] = True
     st.rerun()
 
 
@@ -14457,20 +14467,52 @@ def cached_combo_matrix(_month_key, date_str, filter_nv_key):
   return build_combo_matrix(df, rd, df_off, df_on, fnv, mcp_df=mcp)
 
 
-with st.spinner('Đang tải dữ liệu...'):
-  _mk = get_month_key() if 'get_month_key' in dir() else 'Thang10'
-  try:
-    _mk = get_month_key()
-  except Exception:
-    _mk = 'Thang10'
-  df, mcp = load_prepared_core(_mk)
-  targets = get_targets()
-  turnover_targets = get_turnover_targets()
-  # Lazy: CAT/BRAND/COMBO/VISIT chỉ load khi tab/KPI cần (vẫn cache)
-  df_cat = load_prepared_cat(_mk)
-  df_brand = load_prepared_brand(_mk)
-  df_combo_off, df_combo_on = load_combo_data()
-  df_visit_sched = load_visit_schedule()
+# ---- DATA: session_state giữ DataFrame giữa các lần click (mượt hơn cache hash) ----
+try:
+  _mk = get_month_key()
+except Exception:
+  _mk = st.session_state.get('report_month_key', 'Thang10')
+
+def _ensure_core_data(month_key):
+  sk = f'prep_core_{month_key}'
+  if st.session_state.get('_force_reload') or sk not in st.session_state:
+    with st.spinner('Đang tải dữ liệu gốc (chỉ lần đầu hoặc sau Reload)...'):
+      _df, _mcp = load_prepared_core(month_key)
+      st.session_state[sk] = (_df, _mcp)
+    st.session_state['_force_reload'] = False
+  return st.session_state[sk]
+
+def _lazy_cat(month_key):
+  sk = f'lazy_cat_{month_key}'
+  if sk not in st.session_state:
+    st.session_state[sk] = load_prepared_cat(month_key)
+  return st.session_state[sk]
+
+def _lazy_brand(month_key):
+  sk = f'lazy_brand_{month_key}'
+  if sk not in st.session_state:
+    st.session_state[sk] = load_prepared_brand(month_key)
+  return st.session_state[sk]
+
+def _lazy_combo(month_key):
+  sk = f'lazy_combo_{month_key}'
+  if sk not in st.session_state:
+    st.session_state[sk] = load_combo_data()
+  return st.session_state[sk]
+
+def _lazy_visit(month_key):
+  sk = f'lazy_visit_{month_key}'
+  if sk not in st.session_state:
+    st.session_state[sk] = load_visit_schedule()
+  return st.session_state[sk]
+
+df, mcp = _ensure_core_data(_mk)
+targets = get_targets()
+turnover_targets = get_turnover_targets()
+df_cat = None
+df_brand = None
+df_combo_off, df_combo_on = None, None
+df_visit_sched = None
 
 # Full NV list: RPT + Target_KPI + MCP (NV chưa bán vẫn chọn được / hiện 0)
 _nv_set = set()
@@ -14569,16 +14611,17 @@ with mc1:
 _new_key = [k for k, v in MONTH_OPTIONS.items() if v['label'] == _sel_label][0]
 if _new_key != st.session_state.get('report_month_key'):
   st.session_state['report_month_key'] = _new_key
-  # Đổi tháng → clear cache data
+  for _k in list(st.session_state.keys()):
+    if str(_k).startswith('prep_') or str(_k).startswith('lazy_'):
+      try:
+        del st.session_state[_k]
+      except Exception:
+        pass
+  st.session_state['_force_reload'] = True
   try:
-    load_main_data.clear()
+    _refresh_paths()
   except Exception:
     pass
-  try:
-    st.cache_data.clear()
-  except Exception:
-    pass
-  _refresh_paths()
   st.rerun()
 
 _cfg_m = get_month_cfg()
@@ -14696,6 +14739,26 @@ with f2:
       label_visibility='collapsed',
   )
   selected_kpi = kpi_map[selected_name]
+# Lazy-load đúng data cho KPI đang chọn
+try:
+  _mk_now = get_month_key()
+except Exception:
+  _mk_now = st.session_state.get('report_month_key', 'Thang10')
+_sk = str(selected_kpi)
+if _sk in ('MBS_CAT', 'SUMMARY', 'PERFORMANCE', 'TEA_BATTLE', 'PERF_CAT'):
+  df_cat = _lazy_cat(_mk_now)
+if _sk in ('MBS_BRAND', 'SUMMARY', 'PERFORMANCE', 'PERF_CAT'):
+  df_brand = _lazy_brand(_mk_now)
+if _sk in ('COMBO', 'SUMMARY', 'PERFORMANCE'):
+  df_combo_off, df_combo_on = _lazy_combo(_mk_now)
+if _sk in ('VISIT', 'WEEKLY_PREVIEW', 'SUMMARY', 'ASO_ALL', 'ASO_FOCUS', 'ASO_FOCUS_2'):
+  df_visit_sched = _lazy_visit(_mk_now)
+# Hiệu suất / display thường cần gần như tất cả
+if _sk in ('DISPLAY',) or 'HIEU' in _sk.upper() or 'HS' == _sk:
+  df_cat = _lazy_cat(_mk_now)
+  df_brand = _lazy_brand(_mk_now)
+  df_combo_off, df_combo_on = _lazy_combo(_mk_now)
+  df_visit_sched = _lazy_visit(_mk_now)
 with f3:
   st.markdown(
       '<p class="filter-label">ĐDKD (Nhân viên - Chọn nhiều)</p>',
@@ -14866,17 +14929,32 @@ components.html(
 
 st.markdown('---')
 
-tab_kpi, tab_mcp, tab_cat, tab_brand, tab_dskh_off, tab_dskh_on = st.tabs([
+_nav_opts = [
     '📊 BÁO CÁO KPI',
     '🗺️ MCP VISIT',
     '📦 TRACKING MBS - CAT',
     '🏷️ TRACKING MBS - BRAND',
     '📋 DSKH_Combo OFF',
     '📋 DSKH_Combo ON',
-])
+]
+_nav = st.radio(
+    'Section', _nav_opts, horizontal=True,
+    key='main_nav_section', label_visibility='collapsed',
+)
 
 # ----- TAB KPI -----
-with tab_kpi:
+if _nav == '📊 BÁO CÁO KPI':
+  # Fallback rỗng nếu KPI không cần (tránh NoneType)
+  if df_cat is None:
+    df_cat = pd.DataFrame()
+  if df_brand is None:
+    df_brand = pd.DataFrame()
+  if df_combo_off is None:
+    df_combo_off = pd.DataFrame()
+  if df_combo_on is None:
+    df_combo_on = pd.DataFrame()
+  if df_visit_sched is None:
+    df_visit_sched = pd.DataFrame()
   # Báo cáo hỗ trợ lọc Mã KH / Tên KH (có thông tin cửa hàng)
   _KPI_SUPPORT_KH = {
       'MBS_CAT', 'MBS_BRAND', 'VISIT', 'COMBO', 'SUMMARY',
@@ -18280,7 +18358,7 @@ def render_mbs_data_summary(df_summary, title):
 # ----- TAB MCP -----
 
 
-with tab_mcp:
+if _nav == '🗺️ MCP VISIT':
   st.markdown(
       '<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
       ' font-size: 15px;">🗺️ MCP VISIT & MAPPING DOANH SỐ BÁN HÀNG</h3>',
@@ -18910,7 +18988,9 @@ with tab_mcp:
 
 
 # ----- TAB CAT -----
-with tab_cat:
+if _nav == '📦 TRACKING MBS - CAT':
+  if df_cat is None:
+    df_cat = _lazy_cat(get_month_key() if True else "Thang10")
   st.markdown(
       '<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
       ' font-size: 15px;">🎯 TRACKING MBS - THEO NGÀNH HÀNG (CATEGORY)</h3>',
@@ -19068,7 +19148,9 @@ with tab_cat:
     render_mbs_data_summary(df_cat_summary, 'DATA_CAT SUMMARY')
 
 # ----- TAB BRAND -----
-with tab_brand:
+if _nav == '🏷️ TRACKING MBS - BRAND':
+  if df_brand is None:
+    df_brand = _lazy_brand(get_month_key() if True else "Thang10")
   st.markdown(
       '<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
       ' font-size: 15px;">🏷️ TRACKING MBS - THEO THƯƠNG HIỆU (BRAND)</h3>',
@@ -19226,7 +19308,9 @@ with tab_brand:
     render_mbs_data_summary(df_brand_summary, 'DATA_BRAND SUMMARY')
 
 # ----- TAB DSKH_Combo OFF -----
-with tab_dskh_off:
+if _nav == '📋 DSKH_Combo OFF':
+  if df_combo_off is None:
+    df_combo_off, df_combo_on = _lazy_combo(get_month_key() if True else "Thang10")
   st.markdown(
       '<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
       ' font-size: 15px;">📋 DANH SÁCH KHÁCH HÀNG COMBO OFF (TÂN_COMBO KÊNH'
@@ -19379,7 +19463,9 @@ with tab_dskh_off:
     st.caption(f'Hiển thị: {len(df_off_f):,} / {len(df_combo_off):,} cửa hàng')
 
 # ----- TAB DSKH_Combo ON -----
-with tab_dskh_on:
+if _nav == '📋 DSKH_Combo ON':
+  if df_combo_on is None:
+    df_combo_off, df_combo_on = _lazy_combo(get_month_key() if True else "Thang10")
   st.markdown(
       '<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
       ' font-size: 15px;">📋 DANH SÁCH KHÁCH HÀNG COMBO ON (TÂN_COMBO KÊNH'
