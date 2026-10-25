@@ -19060,19 +19060,28 @@ if _nav == '🗺️ MCP VISIT':
     st.query_params['mcp_cols'] = ','.join(selected_mcp_cols)
     if not selected_mcp_cols:
       selected_mcp_cols = all_cols_mcp
-    # HTML quá nhiều dòng → trình duyệt trắng khi cuộn; dùng dataframe ảo hóa
-    _cols_ok = [c for c in selected_mcp_cols if c in df_show.columns]
-    if len(df_show) > 800:
+    # Giữ format HTML giống các bảng KPI; phân trang để tránh DOM quá lớn (cuộn/resize lag)
+    _PAGE = 150
+    _total_rows = len(df_show)
+    if _total_rows > _PAGE:
+      _n_page = max(1, (_total_rows + _PAGE - 1) // _PAGE)
+      c_p1, c_p2, c_p3 = st.columns([1, 2, 1])
+      with c_p2:
+        _page = st.number_input(
+            f'Trang (mỗi trang {_PAGE} dòng, tổng {_total_rows:,} dòng)',
+            min_value=1,
+            max_value=_n_page,
+            value=1,
+            step=1,
+            key='mcp_detail_page',
+        )
+      _start = (int(_page) - 1) * _PAGE
+      _df_page = df_show.iloc[_start : _start + _PAGE]
       st.caption(
-          f'⚡ {len(df_show):,} dòng — hiển thị dạng bảng ảo hóa (cuộn mượt). '
-          f'Lọc Mã/Tên KH để xem chi tiết HTML.'
+          f'⚡ Trang {int(_page)}/{_n_page} — dòng {_start+1:,}–{min(_start+_PAGE, _total_rows):,} / {_total_rows:,} '
+          f'(format HTML như các bảng KPI). Lọc Mã/Tên KH để thu hẹp.'
       )
-      st.dataframe(
-          df_show[_cols_ok] if _cols_ok else df_show,
-          use_container_width=True,
-          height=480,
-          hide_index=True,
-      )
+      render_mbs_data_table(_df_page, selected_mcp_cols)
     else:
       render_mbs_data_table(df_show, selected_mcp_cols)
     _ma_col = col_ma if col_ma and col_ma in df_f.columns else (
