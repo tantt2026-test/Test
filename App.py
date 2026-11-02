@@ -852,17 +852,19 @@ def load_cat_data():
 
 @st.cache_data(ttl=600)
 def load_brand_data(_month_key='Thang11'):
-  """Load Data_Brand — quét header thật (bỏ dòng Bộ lọc), tìm trong data/ThangXX.
+  """Load Data_Brand — bỏ dòng Bộ lọc Excel, nhận đúng header thật.
 
-  _month_key: đưa vào cache key để đổi tháng / upload file mới không bị dính cache rỗng.
+  File export từ hệ thống thường có:
+    - Dòng 0: text "Bộ lọc được áp dụng: ..."
+    - Dòng 1: header thật (MONTH, SM Name, Outlet Code, ...)
   """
   try:
     _refresh_paths()
   except Exception:
     pass
+
   candidates = []
   ddir = get_data_dir()
-  # Ưu tiên đúng path tháng hiện tại
   for name in ['Data_Brand.xlsx', 'Data_Brand.xls', 'data_brand.xlsx', BRAND_PATH]:
     candidates.append(os.path.join(ddir, name))
   for base in [ddir, 'data', '.']:
@@ -877,59 +879,102 @@ def load_brand_data(_month_key='Thang11'):
       pass
     for name in ['Data_Brand.xlsx', 'Data_Brand.xls', BRAND_PATH]:
       candidates.append(os.path.join(base, name) if base != '.' else name)
+
+  def _is_filter_row(vals):
+    joined = ' '.join(str(x).lower() for x in vals if pd.notna(x))
+    return (
+        'bộ lọc' in joined or 'bo loc' in joined
+        or 'được áp dụng' in joined or 'duoc ap dung' in joined
+        or joined.startswith('member không') or 'program_group' in joined
+    )
+
+  def _is_header_vals(vals):
+    joined = ' | '.join(str(x).strip().lower() for x in vals if pd.notna(x))
+    if _is_filter_row(vals):
+      return False
+    has_outlet = ('outlet' in joined and 'code' in joined) or 'mã ch' in joined or 'ma ch' in joined
+    has_member = 'member type' in joined or 'member_type' in joined
+    has_month_sm = ('month' in joined and 'sm name' in joined)
+    has_target = 'nền tảng' in joined or 'nen tang' in joined
+    has_brand = 'danh sách full' in joined or 'phân loại cat' in joined
+    return (has_outlet and (has_member or has_month_sm or has_target or has_brand)) or (
+        has_month_sm and has_member
+    )
+
   seen = set()
   for p in candidates:
     if p in seen or not os.path.isfile(p):
       continue
     seen.add(p)
-    # Thử header=0 nhanh (file T11 sạch)
-    try:
-      df0 = pd.read_excel(p, header=0)
-      cols0 = [str(c).strip().lower() for c in df0.columns]
-      if (
-          any('outlet' in c and 'code' in c for c in cols0)
-          and any('member' in c for c in cols0)
-      ) or any('doanh số nền tảng' in c or 'nen tang' in c for c in cols0):
-        if not df0.empty:
-          return df0
-    except Exception:
-      pass
     try:
       raw = pd.read_excel(p, header=None, dtype=object)
     except Exception:
       continue
     if raw is None or raw.empty:
       continue
+
     header_row = None
-    for i in range(min(15, len(raw))):
-      vals = [str(x).strip().lower() for x in raw.iloc[i].tolist() if pd.notna(x)]
-      joined = ' | '.join(vals)
-      if (
-          ('outlet' in joined and 'code' in joined)
-          or ('member type' in joined)
-          or ('doanh số nền tảng' in joined or 'doanh so nen tang' in joined)
-          or ('month' in joined and 'sm name' in joined)
-      ):
+    for i in range(min(20, len(raw))):
+      vals = raw.iloc[i].tolist()
+      if _is_header_vals(vals):
         header_row = i
         break
+    # Fallback: tìm dòng có 'MONTH' + 'Outlet Code'
+    if header_row is None:
+      for i in range(min(20, len(raw))):
+        vals = [str(x).strip().lower() for x in raw.iloc[i].tolist() if pd.notna(x)]
+        joined = ' | '.join(vals)
+        if 'month' in joined and ('outlet code' in joined or 'outlet_code' in joined):
+          if not _is_filter_row(raw.iloc[i].tolist()):
+            header_row = i
+            break
     if header_row is None:
       continue
+
     cols = []
     for j, c in enumerate(raw.iloc[header_row].tolist()):
       if pd.isna(c) or str(c).strip() == '':
         cols.append(f'Col_{j}')
       else:
         cols.append(str(c).strip())
+    # Tránh trùng tên cột
+    seen_c = {}
+    uniq_cols = []
+    for c in cols:
+      if c in seen_c:
+        seen_c[c] += 1
+        uniq_cols.append(f'{c}_{seen_c[c]}')
+      else:
+        seen_c[c] = 0
+        uniq_cols.append(c)
+
     df = raw.iloc[header_row + 1:].copy()
-    df.columns = cols
+    df.columns = uniq_cols
     df = df.dropna(how='all').reset_index(drop=True)
-    # bỏ dòng còn sót filter
+
+    # Bỏ các dòng còn sót filter / header lặp
     if len(df):
-      first = str(df.iloc[0, 0]).lower()
-      if first.startswith('bộ lọc') or first.startswith('bo loc'):
-        df = df.iloc[1:].reset_index(drop=True)
-    if not df.empty:
+      def _bad_row(row):
+        first = str(row.iloc[0]).strip().lower() if len(row) else ''
+        if first.startswith('bộ lọc') or first.startswith('bo loc'):
+          return True
+        if first in ('month', 'tháng', 'stt'):
+          return True
+        return False
+      try:
+        df = df[~df.apply(_bad_row, axis=1)].reset_index(drop=True)
+      except Exception:
+        pass
+
+    # Chuẩn hoá MONTH nếu bị float 202611.0
+    for c in df.columns:
+      if str(c).strip().lower() == 'month':
+        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int).astype(str)
+        break
+
+    if not df.empty and len(df.columns) >= 5:
       return df
+
   return pd.DataFrame()
 
 
@@ -20562,6 +20607,21 @@ if _nav == '🏷️ TRACKING MBS - BRAND':
         )
 
     all_cols_brand = df_f.columns.tolist()
+    preferred_brand = [
+        'SM Name', 'Outlet Code', 'Outlet Name', 'Member type',
+        'Danh sách full cat/brand', 'Phân loại cat/brand',
+        'Doanh số nền tảng của OUTLET',
+        'Doanh số thực đạt của CAT/BRAND',
+        'Doanh số thực đạt của CAT/BRAND(Not Cancel/Pending)',
+        'Business type L1', 'VIP Type',
+    ]
+    preferred_brand = [c for c in preferred_brand if c in all_cols_brand]
+    # bỏ cột header bẩn (dòng bộ lọc Excel)
+    all_cols_brand = [
+        c for c in all_cols_brand
+        if 'bộ lọc' not in str(c).lower() and 'bo loc' not in str(c).lower()
+        and 'được áp dụng' not in str(c).lower()
+    ]
     saved_brand_cols = st.query_params.get('brand_cols', None)
     if saved_brand_cols:
       if isinstance(saved_brand_cols, str):
@@ -20569,13 +20629,17 @@ if _nav == '🏷️ TRACKING MBS - BRAND':
             c.strip()
             for c in saved_brand_cols.split(',')
             if c.strip() in all_cols_brand
+            and 'bộ lọc' not in c.lower()
         ]
       else:
-        default_cols_brand = [c for c in saved_brand_cols if c in all_cols_brand]
+        default_cols_brand = [
+            c for c in saved_brand_cols
+            if c in all_cols_brand and 'bộ lọc' not in str(c).lower()
+        ]
       if not default_cols_brand:
-        default_cols_brand = all_cols_brand
+        default_cols_brand = preferred_brand or all_cols_brand
     else:
-      default_cols_brand = all_cols_brand
+      default_cols_brand = preferred_brand or all_cols_brand
 
     with st.popover('👁️ Chọn cột hiển thị (Brand)', use_container_width=False):
       selected_brand_cols = st.multiselect(
