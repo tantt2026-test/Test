@@ -437,10 +437,8 @@ MONTH_OPTIONS = {
         'year': 2026, 'month': 11,
         'folder': 'Thang11',
         'aso_focus_name': 'ASO_Focus - Trận Xanh (SP Tết)',
-        'aso_focus_pat': (
-            r't[eế]t|nam ngư|nam ngu|chinsu|chin-su|kokomi|omachi|'
-            r'chant[eé]|vinacafe|b[uú]p\s*non|tea\s*365|wake\s*up\s*247'
-        ),
+        # Chỉ SP có chữ Tết / mã trong danh sách CV (không lấy toàn bộ Chinsu/Nam Ngư thường)
+        'aso_focus_pat': r't[eế]t',
         'aso_focus_codes': ['03NM00980', '03NM00981', '03NM00984', '03NM00798', '03NM00797', '03NM00982', '03NM00983', '03OT00548', '03OT00547', '03OT00559', '03OT00558', '03OT00382', '03OT00381', '03OT00215', '03OT00214', '03OT00217', '03OT00216', '03NM00986', '03NM00987', '03NM00988', '02KK00313', '02KK00361', '02KK00360', '02OM00338', '02OM00772', '02OM00770', '02OM00771', '02OM00951', '04HP00636', '04HP00637', '04HP00638', '08CF00980', '08CF00979', '08TR00055', '08TR00056', '08TR00057', '08TL00111'],
         'aso_focus2_name': 'ASO_Focus_2 - Trận Vàng (Hạt Nêm Chinsu)',
         'aso_focus2_pat': (
@@ -854,7 +852,7 @@ def load_cat_data():
 
 @st.cache_data(ttl=600)
 def load_brand_data():
-  """Load Data_Brand — hỗ trợ header 0/1/2 và tên file linh hoạt trong data/ThangXX."""
+  """Load Data_Brand — quét header thật (bỏ dòng Bộ lọc), tìm trong data/ThangXX."""
   try:
     _refresh_paths()
   except Exception:
@@ -878,22 +876,42 @@ def load_brand_data():
     if p in seen or not os.path.isfile(p):
       continue
     seen.add(p)
-    for hdr in (0, 1, 2):
-      try:
-        df = pd.read_excel(p, header=hdr)
-        if df is None or df.empty:
-          continue
-        cols = [str(c).strip().lower() for c in df.columns]
-        # nhận diện đúng sheet brand
-        if any('outlet' in c and 'code' in c for c in cols) or any(
-            'member' in c for c in cols
-        ) or any('nền tảng' in c or 'nen tang' in c for c in cols):
-          # bỏ dòng filter text nếu lọt vào
-          if len(df) and str(df.iloc[0, 0]).lower().startswith('bộ lọc'):
-            df = df.iloc[1:].reset_index(drop=True)
-          return df
-      except Exception:
-        continue
+    try:
+      raw = pd.read_excel(p, header=None, dtype=object)
+    except Exception:
+      continue
+    if raw is None or raw.empty:
+      continue
+    header_row = None
+    for i in range(min(15, len(raw))):
+      vals = [str(x).strip().lower() for x in raw.iloc[i].tolist() if pd.notna(x)]
+      joined = ' | '.join(vals)
+      if (
+          ('outlet' in joined and 'code' in joined)
+          or ('member type' in joined)
+          or ('doanh số nền tảng' in joined or 'doanh so nen tang' in joined)
+          or ('month' in joined and 'sm name' in joined)
+      ):
+        header_row = i
+        break
+    if header_row is None:
+      continue
+    cols = []
+    for j, c in enumerate(raw.iloc[header_row].tolist()):
+      if pd.isna(c) or str(c).strip() == '':
+        cols.append(f'Col_{j}')
+      else:
+        cols.append(str(c).strip())
+    df = raw.iloc[header_row + 1:].copy()
+    df.columns = cols
+    df = df.dropna(how='all').reset_index(drop=True)
+    # bỏ dòng còn sót filter
+    if len(df):
+      first = str(df.iloc[0, 0]).lower()
+      if first.startswith('bộ lọc') or first.startswith('bo loc'):
+        df = df.iloc[1:].reset_index(drop=True)
+    if not df.empty:
+      return df
   return pd.DataFrame()
 
 
@@ -2934,7 +2952,14 @@ def build_report(
       if code_col is not None:
         cc = d[code_col].astype(str).str.strip().str.upper()
         cc = cc.str.replace(r'\.0$', '', regex=True)
-        mask = mask | cc.isin(codes)
+        # match full code and code không leading zero / bỏ prefix
+        codes_norm = set(codes)
+        for c0 in list(codes):
+          codes_norm.add(c0.lstrip('0') or c0)
+          if len(c0) > 4:
+            codes_norm.add(c0[-6:])
+            codes_norm.add(c0[-4:])
+        mask = mask | cc.isin(codes_norm)
     d = d[mask]
     if d.empty:
       return pd.Series(dtype=int), pd.Series(dtype=int)
@@ -3670,7 +3695,7 @@ def build_weekly_preview(mcp_df, sales_hist, df_rpt=None, filter_nv=None, months
   Hiển thị Tên NVBH lấy từ MCP hiện tại theo Position code.
   """
   if months is None:
-    months = [(2026, 6), (2026, 7), (2026, 8), (2026, 9), (2026, 10)]
+    months = [(2026, 6), (2026, 7), (2026, 8), (2026, 9), (2026, 10), (2026, 11)]
 
   def _empty():
     cols = ['STT', 'Tên NVBH', 'Position code']
@@ -3770,7 +3795,30 @@ def build_weekly_preview(mcp_df, sales_hist, df_rpt=None, filter_nv=None, months
         if c_l1:
           s = s[s[c_l1].map(is_ch)]
         if c_month:
-          s['_ym'] = s[c_month].astype(str).str.strip()
+          def _norm_ym(v):
+            """Chuẩn hoá 6/2026, 06/2026, 2026-06, 202606, datetime → MM/YYYY."""
+            if pd.isna(v):
+              return ''
+            if hasattr(v, 'month') and hasattr(v, 'year'):
+              try:
+                return f'{int(v.month):02d}/{int(v.year)}'
+              except Exception:
+                pass
+            s0 = str(v).strip()
+            # 2026-06 / 2026/06
+            m1 = re.match(r'^(\d{4})[-/](\d{1,2})', s0)
+            if m1:
+              return f'{int(m1.group(2)):02d}/{int(m1.group(1))}'
+            # 06/2026 or 6/2026
+            m2 = re.match(r'^(\d{1,2})[-/](\d{4})', s0)
+            if m2:
+              return f'{int(m2.group(1)):02d}/{int(m2.group(2))}'
+            # 202606
+            m3 = re.match(r'^(\d{4})(\d{2})$', s0)
+            if m3:
+              return f'{int(m3.group(2)):02d}/{int(m3.group(1))}'
+            return s0
+          s['_ym'] = s[c_month].map(_norm_ym)
           for y, m in months:
             label = f'{m:02d}/{y}'
             ss = s[s['_ym'] == label]
@@ -4042,7 +4090,7 @@ def _lppc_from_orders(df_lines):
 def build_weekly_lppc(mcp_df, sales_hist, df_rpt=None, filter_nv=None, months=None):
   """Bảng LPPC Weekly — chỉ Kênh OFF, logic giống KPI LPPC, map Position code."""
   if months is None:
-    months = [(2026, 6), (2026, 7), (2026, 8), (2026, 9), (2026, 10)]
+    months = [(2026, 6), (2026, 7), (2026, 8), (2026, 9), (2026, 10), (2026, 11)]
 
   empty_cols = ['STT', 'Tên NVBH'] + [x for y, m in months for x in (f'PC|{m:02d}/{y}', f'LPPC|{m:02d}/{y}')]
   empty = pd.DataFrame(columns=empty_cols)
@@ -4249,7 +4297,7 @@ def build_weekly_lppc_vip(mcp_df, sales_hist, df_rpt=None, filter_nv=None, month
   Map Mã CH với Data_MCP (VIP MCH) → lọc đơn OFF → LPPC (trừ Meat/Beer).
   """
   if months is None:
-    months = [(2026, 6), (2026, 7), (2026, 8), (2026, 9), (2026, 10)]
+    months = [(2026, 6), (2026, 7), (2026, 8), (2026, 9), (2026, 10), (2026, 11)]
   vip_groups = ('VIP3', 'VIP5', 'VIPSI')
   empty_cols = ['STT', 'Tên NVBH']
   for y, m in months:
@@ -4886,7 +4934,7 @@ def build_weekly_pc_sm_day(mcp_df, sales_hist, df_rpt=None, filter_nv=None, mont
   - PC/DAY: tổng PC OFF (MOQ, max 1 PC/CH/ngày) ÷ số ngày làm việc
   """
   if months is None:
-    months = [(2026, 6), (2026, 7), (2026, 8), (2026, 9), (2026, 10)]
+    months = [(2026, 6), (2026, 7), (2026, 8), (2026, 9), (2026, 10), (2026, 11)]
 
   empty_cols = ['STT', 'Tên NVBH']
   for y, m in months:
@@ -9466,18 +9514,38 @@ def _perf_table_html(df, section='call'):
         ]),
     ]
   else:
+    _cfg_g = get_month_cfg()
+    _gx = _cfg_g.get('aso_focus_name', 'ASO Focus Trận Xanh')
+    _gv = _cfg_g.get('aso_focus2_name', 'ASO Focus Trận Vàng')
+    # Rút gọn tiêu đề cột group
+    if 'Tết' in str(_gx):
+      _gx = 'ASO Focus Trận Xanh SP Tết'
+    elif 'Tea' in str(_gx) or '365' in str(_gx):
+      _gx = 'ASO Focus Trận Xanh Tea365'
+    elif 'Chanté' in str(_gx) or 'Chante' in str(_gx):
+      _gx = 'ASO Focus Trận Xanh Chanté'
+    else:
+      _gx = 'ASO Focus Trận Xanh'
+    if 'Hạt Nêm' in str(_gv) or 'nêm' in str(_gv).lower():
+      _gv = 'ASO Focus Trận Vàng Hạt Nêm'
+    elif 'Homey' in str(_gv):
+      _gv = 'ASO Focus Trận Vàng Homey'
+    elif 'Omachi' in str(_gv):
+      _gv = 'ASO Focus Trận Vàng Omachi'
+    else:
+      _gv = 'ASO Focus Trận Vàng'
     groups = [
         ('SellOut', [
             ('CT Ngày SO', 'CT Ngày'),
             ('TH SO', 'TH'),
             ('% TH SO', '% TH'),
         ]),
-        ('ASO Focus Trận Xanh TEA', [
+        (_gx, [
             ('CT Xanh', 'CT Ngày'),
             ('TH Xanh', 'TH'),
             ('% TH Xanh', '% TH'),
         ]),
-        ('ASO Focus Trận Vàng Homey 2,9kg', [
+        (_gv, [
             ('CT Vàng', 'CT Ngày'),
             ('TH Vàng', 'TH'),
             ('% TH Vàng', '% TH'),
@@ -11004,8 +11072,8 @@ def build_perf_by_month(df_raw, filter_nv=None, n_months=4, df_rpt=None, report_
               to_total += float(v or 0)
               seen.add(k.lower())
         sku_total = float(g['Target'].sum())
-        if to_total > 0 and sku_total > 0:
-          # Cả hai nguồn đều VND
+        # Chỉ căn Target theo Turnover KPI cho THÁNG HIỆN TẠI — tháng trước giữ nguyên TARGET SO file
+        if m == cur_m and to_total > 0 and sku_total > 0:
           _ratio = float(to_total) / float(sku_total)
           if 0.5 <= _ratio <= 3.0:
             g['Target'] = g['Target'].astype(float) * _ratio
@@ -14995,12 +15063,32 @@ def build_hs_monthly_kpi_rows(df, report_date, targets, turnover_targets, filter
   except Exception:
     rows.append({'name': 'PC BT / Call Plan OFF', 'th': 0, 'ct': 0, 'pct': 0, 'fmt': 'num'})
 
+  _cfg_hs = get_month_cfg()
+  _lab_f1 = _cfg_hs.get('aso_focus_name', 'ASO_Focus - Trận Xanh')
+  _lab_f2 = _cfg_hs.get('aso_focus2_name', 'ASO_Focus_2 - Trận Vàng')
+  # Rút gọn label cho metric card
+  if 'Tết' in _lab_f1 or 'TET' in _lab_f1.upper():
+    _lab_f1_short = 'Trận Xanh · SP Tết'
+  elif 'Tea' in _lab_f1 or '365' in _lab_f1:
+    _lab_f1_short = 'Trận Xanh · Tea365'
+  elif 'Chanté' in _lab_f1 or 'Chante' in _lab_f1:
+    _lab_f1_short = 'Trận Xanh · Chanté'
+  else:
+    _lab_f1_short = 'Trận Xanh'
+  if 'Hạt Nêm' in _lab_f2 or 'Hat Nem' in _lab_f2 or 'nêm' in _lab_f2.lower():
+    _lab_f2_short = 'Trận Vàng · Hạt Nêm Chinsu'
+  elif 'Homey' in _lab_f2:
+    _lab_f2_short = 'Trận Vàng · Homey'
+  elif 'Omachi' in _lab_f2:
+    _lab_f2_short = 'Trận Vàng · Omachi Trộn'
+  else:
+    _lab_f2_short = 'Trận Vàng'
   kpi_list = [
     ('PC_BT', 'PC BT', 'num'),
     ('LPPC', 'LPPC OFF (trừ Meat, Beer)', 'float'),
     ('ASO_ALL', 'ASO ALL', 'num'),
-    ('ASO_FOCUS', 'Trận Xanh · Tea365', 'num'),
-    ('ASO_FOCUS_2', 'Trận Vàng · Homey', 'num'),
+    ('ASO_FOCUS', _lab_f1_short, 'num'),
+    ('ASO_FOCUS_2', _lab_f2_short, 'num'),
     ('PC_ON', 'PC ON', 'num'),
     ('LPPC_MEAT', 'LPPC Meat', 'float'),
   ]
@@ -15497,7 +15585,7 @@ with f2:
       '13. BÁO CÁO MBS BRAND': 'MBS_BRAND',
       '14. BÁO CÁO HIỆU SUẤT BÁN HÀNG': 'PERFORMANCE',
       '15. BÁO CÁO TRƯNG BÀY': 'DISPLAY',
-      '16. KẾ HOẠCH TÁC CHIẾN TRÀ BÚP NON T10': 'TEA_BATTLE',
+      '16. KẾ HOẠCH TÁC CHIẾN TRÀ BÚP NON': 'TEA_BATTLE',
       '17. BÁO CÁO PERFORMANCE': 'PERF_CAT',
       '18. WEEKLY PREVIEW - MCP / ASO / %COV': 'WEEKLY_PREVIEW',
   }
@@ -18039,7 +18127,7 @@ if _nav == '📊 BÁO CÁO KPI':
   elif selected_kpi == 'TEA_BATTLE':
     st.markdown(
         '<h3 style="text-align:center;color:#1a365d;font-weight:800;">'
-        '16. KẾ HOẠCH TÁC CHIẾN TRÀ BÚP NON THÁNG 10</h3>',
+        '16. KẾ HOẠCH TÁC CHIẾN TRÀ BÚP NON</h3>',
         unsafe_allow_html=True,
     )
     df_raw = load_raw_tea_data()
