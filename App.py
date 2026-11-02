@@ -862,12 +862,15 @@ def load_brand_data(_month_key='Thang11'):
     pass
   candidates = []
   ddir = get_data_dir()
+  # Ưu tiên đúng path tháng hiện tại
+  for name in ['Data_Brand.xlsx', 'Data_Brand.xls', 'data_brand.xlsx', BRAND_PATH]:
+    candidates.append(os.path.join(ddir, name))
   for base in [ddir, 'data', '.']:
     if not os.path.isdir(base):
       continue
     try:
       for f in os.listdir(base):
-        fl = f.lower().replace(' ', '')
+        fl = f.lower().replace(' ', '').replace('_', '')
         if fl.endswith(('.xlsx', '.xls', '.xlsm')) and 'brand' in fl and 'summary' not in fl:
           candidates.append(os.path.join(base, f))
     except Exception:
@@ -2456,7 +2459,21 @@ def process_brand_sales(df_rpt, df_brand):
   )
 
   df_clean['Mapped_Brand'] = df_clean['Search_Str'].apply(match_brand)
-  df_clean['Mã CH_str'] = df_clean['Mã CH'].astype(str).str.strip()
+  _ma_col = None
+  for _c in df_clean.columns:
+    _cl = str(_c).strip().lower()
+    if _cl in ('mã ch', 'ma ch', 'outlet code', 'outlet_code', 'mã khách hàng', 'customer code'):
+      _ma_col = _c
+      break
+  if _ma_col is None:
+    for _c in df_clean.columns:
+      _cl = str(_c).strip().lower()
+      if ('mã ch' in _cl or 'ma ch' in _cl or ('outlet' in _cl and 'code' in _cl)):
+        _ma_col = _c
+        break
+  if _ma_col is None:
+    return df_brand
+  df_clean['Mã CH_str'] = df_clean[_ma_col].astype(str).str.strip()
 
   df_valid = (
       df_clean[df_clean[status_col] != 'Đã hủy'] if status_col else df_clean
@@ -15317,10 +15334,30 @@ def load_prepared_cat(_month_key='Thang10'):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_prepared_brand(_month_key='Thang10'):
-  df, _ = load_main_data(_month_key)
+  """Load Data_Brand + (tuỳ chọn) map DS từ RPT.
+
+  Brand master LUÔN được trả về dù file bán hàng thiếu/lỗi.
+  """
   brand = load_brand_data(str(_month_key))
   if brand is None or brand.empty:
     return pd.DataFrame()
+  # Thử load RPT — không st.stop, không chặn Brand
+  df = None
+  try:
+    rpt_paths = [p for p in _resolve_rpt_paths() if os.path.isfile(p)]
+    if rpt_paths:
+      parts = []
+      for p in rpt_paths:
+        try:
+          parts.append(_read_sales_excel(p))
+        except Exception:
+          pass
+      if parts:
+        df = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+  except Exception:
+    df = None
+  if df is None or df.empty:
+    return brand
   try:
     out = process_brand_sales(df, brand)
     if out is None or out.empty:
@@ -16639,14 +16676,25 @@ if _nav == '📊 BÁO CÁO KPI':
     if df_brand is None or getattr(df_brand, 'empty', True):
       try:
         df_brand = _lazy_brand(get_month_key())
-      except Exception:
+      except Exception as _e:
+        print('lazy_brand err', _e)
         df_brand = pd.DataFrame()
     if df_brand is None or getattr(df_brand, 'empty', True):
       try:
         df_brand = load_brand_data(get_month_key())
-      except Exception:
+      except Exception as _e:
+        print('load_brand_data err', _e)
         df_brand = pd.DataFrame()
-    result = build_mbs_brand_report(df_brand, filter_nv, mcp_df=mcp)
+    if df_brand is None or getattr(df_brand, 'empty', True):
+      st.warning(
+          f'Không load được Data_Brand từ `{get_data_dir()}`. '
+          'Kiểm tra file + Xóa Cache & Reload.'
+      )
+      result = {'groups': {}, 'df_detail': pd.DataFrame(), 'total_kh': 0}
+    else:
+      result = build_mbs_brand_report(df_brand, filter_nv, mcp_df=mcp)
+    if not isinstance(result, dict):
+      result = {'groups': {}, 'df_detail': pd.DataFrame(), 'total_kh': 0}
     groups = result['groups']
     df_detail = result['df_detail']
     total_kh = result['total_kh']
@@ -20382,9 +20430,17 @@ if _nav == '🏷️ TRACKING MBS - BRAND':
       unsafe_allow_html=True,
   )
   if df_brand is None or df_brand.empty:
+    tried = get_data_dir()
+    files_here = []
+    try:
+      files_here = [f for f in os.listdir(tried) if 'brand' in f.lower()]
+    except Exception:
+      pass
     st.error(
-        "❌ Không tìm thấy Data_Brand.xlsx trong "
-        f"`{get_data_dir()}/`. Upload file rồi **Xóa Cache & Reload**."
+        "❌ Không load được Data_Brand.\n\n"
+        f"Thư mục: `{tried}/`\n"
+        f"File brand tìm thấy: {files_here or '(không có)'}\n\n"
+        "→ Kiểm tra tên file `Data_Brand.xlsx` rồi bấm **Xóa Cache & Reload**."
     )
   else:
     col_nv = find_col(df_brand, ['SM Name', 'SM name', 'Tên NVBH', 'Nhân viên'])
