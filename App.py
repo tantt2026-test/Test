@@ -569,14 +569,35 @@ def _list_data_dir():
     return []
 
 def _get_combo_off_path():
+  """Tìm file DS Combo OFF — hỗ trợ tên kiểu 'Tân_Combo Kênh OFF.xlsx' / 'Combo Kênh OFF.xlsx'."""
   ddir = get_data_dir()
-  files = [f for f in _list_data_dir() if 'Combo' in f and 'OFF' in f]
-  return os.path.join(ddir, files[0]) if files else os.path.join(ddir, 'Combo Kênh OFF.xlsx')
+  cands = []
+  for f in _list_data_dir():
+    fl = str(f).lower().replace('ế', 'e').replace('ề', 'e')
+    if not fl.endswith(('.xlsx', '.xls', '.xlsm')):
+      continue
+    if 'combo' in fl and 'off' in fl and 'on' not in fl.replace('off', ''):
+      cands.append(f)
+    elif 'combo' in fl and 'off' in fl:
+      cands.append(f)
+  # ưu tiên tên có 'off' rõ
+  off_only = [f for f in cands if 'on' not in str(f).lower().replace('off', '')]
+  pick = (off_only or cands)
+  return os.path.join(ddir, pick[0]) if pick else os.path.join(ddir, 'Combo Kênh OFF.xlsx')
 
 def _get_combo_on_path():
+  """Tìm file DS Combo ON."""
   ddir = get_data_dir()
-  files = [f for f in _list_data_dir() if 'Combo' in f and ('On' in f or 'ON' in f)]
-  return os.path.join(ddir, files[0]) if files else os.path.join(ddir, 'Combo Kênh On.xlsx')
+  cands = []
+  for f in _list_data_dir():
+    fl = str(f).lower().replace('ế', 'e')
+    if not fl.endswith(('.xlsx', '.xls', '.xlsm')):
+      continue
+    if 'combo' in fl and (' on' in fl or 'kênh on' in fl or 'kenh on' in fl or fl.endswith('on.xlsx') or '_on' in fl or ' on.' in fl):
+      cands.append(f)
+    elif 'combo' in fl and 'on' in fl and 'off' not in fl:
+      cands.append(f)
+  return os.path.join(ddir, cands[0]) if cands else os.path.join(ddir, 'Combo Kênh On.xlsx')
 
 def _refresh_paths():
   global RPT_PATH, MCP_PATH, KPI_PATH, VISIT_SCHED_PATH, DSKH_TRAI_PATH
@@ -729,33 +750,94 @@ def load_main_data(_month_key='Thang10'):
   return df, mcp
 
 
+def _normalize_combo_master(df):
+  """Chuẩn hoá cột DS Combo T10/T11 → outlet_code, Tên NV, Tên CH."""
+  if df is None or df.empty:
+    return pd.DataFrame()
+  d = df.copy()
+  d.columns = [str(c).strip() for c in d.columns]
+
+  def _pick(cands):
+    for c in cands:
+      if c in d.columns:
+        return c
+    low = {str(c).strip().lower(): c for c in d.columns}
+    for c in cands:
+      if c.lower() in low:
+        return low[c.lower()]
+    for c in d.columns:
+      cl = str(c).lower().replace(' ', '').replace('_', '')
+      for t in cands:
+        tl = t.lower().replace(' ', '').replace('_', '')
+        if tl and tl in cl:
+          return c
+    return None
+
+  c_ma = _pick(['OUTLET_CD', 'Outlet_CD', 'outlet_code', 'Outlet Code', 'Outlet_code', 'Mã CH', 'Mã KH'])
+  c_nv = _pick(['SM Name', 'SM name', 'Tên NV', 'Tên NVBH', 'Nhân viên'])
+  c_ten = _pick(['OUTLET', 'Outlet', 'Outlet Name', 'Tên CH', 'Tên KH', 'Shipto Name'])
+  out = pd.DataFrame()
+  if c_ma:
+    out['outlet_code'] = (
+        d[c_ma].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+    )
+  else:
+    out['outlet_code'] = ''
+  if c_nv:
+    out['Tên NV'] = d[c_nv].astype(str).str.strip()
+  else:
+    out['Tên NV'] = ''
+  if c_ten:
+    out['Tên CH'] = d[c_ten].astype(str).str.strip()
+  else:
+    out['Tên CH'] = ''
+  # giữ thêm cột hữu ích nếu có
+  for src, dst in [
+      ('PROMOTION_NAME', 'PROMOTION_NAME'),
+      ('PROMO_GROUP', 'PROMO_GROUP'),
+      ('Thứ', 'Thứ'),
+      ('VIP Type', 'VIP Type'),
+      ('Business type L1', 'L1'),
+  ]:
+    if src in d.columns and dst not in out.columns:
+      out[dst] = d[src]
+  # bỏ dòng header lặp / rỗng
+  out = out[out['outlet_code'].astype(str).str.lower().isin(['', 'nan', 'none', 'outlet_cd', 'outlet code']) == False]
+  return out.reset_index(drop=True)
+
+
+def _read_combo_file(path):
+  """Đọc file Combo: ưu tiên header=0 (T11), fallback header=2 (T10 multi-header)."""
+  if not path or not os.path.exists(path):
+    return pd.DataFrame()
+  # Thử header=0
+  try:
+    df0 = pd.read_excel(path, header=0)
+    cols = [str(c).strip().lower() for c in df0.columns]
+    if any(x in cols for x in ('outlet_cd', 'outlet code', 'outlet_code', 'sm name', 'promotion_name')):
+      return _normalize_combo_master(df0)
+  except Exception as e:
+    print('combo header0 fail', path, e)
+  # Fallback header=2 (format cũ)
+  try:
+    raw = pd.read_excel(path, header=2)
+    new_cols = raw.iloc[0].values
+    df = raw.iloc[1:].copy()
+    df.columns = [str(c) if pd.notna(c) else f'Col_{i}' for i, c in enumerate(new_cols)]
+    return _normalize_combo_master(df)
+  except Exception as e:
+    print('combo header2 fail', path, e)
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=600)
 def load_combo_data():
-  df_off, df_on = pd.DataFrame(), pd.DataFrame()
   try:
-    if os.path.exists(COMBO_OFF_PATH):
-      raw_off = pd.read_excel(COMBO_OFF_PATH, header=2)
-      new_cols = raw_off.iloc[0].values
-      df_off = raw_off.iloc[1:].copy()
-      df_off.columns = [
-          str(c) if pd.notna(c) else f'Col_{i}'
-          for i, c in enumerate(new_cols)
-      ]
-  except Exception as e:
-    print('Error loading Combo OFF:', e)
-
-  try:
-    if os.path.exists(COMBO_ON_PATH):
-      raw_on = pd.read_excel(COMBO_ON_PATH, header=2)
-      new_cols = raw_on.iloc[0].values
-      df_on = raw_on.iloc[1:].copy()
-      df_on.columns = [
-          str(c) if pd.notna(c) else f'Col_{i}'
-          for i, c in enumerate(new_cols)
-      ]
-  except Exception as e:
-    print('Error loading Combo ON:', e)
-
+    _refresh_paths()
+  except Exception:
+    pass
+  df_off = _read_combo_file(COMBO_OFF_PATH)
+  df_on = _read_combo_file(COMBO_ON_PATH)
   return df_off, df_on
 
 
@@ -772,12 +854,46 @@ def load_cat_data():
 
 @st.cache_data(ttl=600)
 def load_brand_data():
-  for path in [BRAND_PATH, os.path.join(get_data_dir(), 'Data_Brand.xlsx')]:
-    if os.path.exists(path):
+  """Load Data_Brand — hỗ trợ header 0/1/2 và tên file linh hoạt trong data/ThangXX."""
+  try:
+    _refresh_paths()
+  except Exception:
+    pass
+  candidates = []
+  ddir = get_data_dir()
+  for base in [ddir, 'data', '.']:
+    if not os.path.isdir(base):
+      continue
+    try:
+      for f in os.listdir(base):
+        fl = f.lower().replace(' ', '')
+        if fl.endswith(('.xlsx', '.xls', '.xlsm')) and 'brand' in fl and 'summary' not in fl:
+          candidates.append(os.path.join(base, f))
+    except Exception:
+      pass
+    for name in ['Data_Brand.xlsx', 'Data_Brand.xls', BRAND_PATH]:
+      candidates.append(os.path.join(base, name) if base != '.' else name)
+  seen = set()
+  for p in candidates:
+    if p in seen or not os.path.isfile(p):
+      continue
+    seen.add(p)
+    for hdr in (0, 1, 2):
       try:
-        return pd.read_excel(path)
-      except:
-        pass
+        df = pd.read_excel(p, header=hdr)
+        if df is None or df.empty:
+          continue
+        cols = [str(c).strip().lower() for c in df.columns]
+        # nhận diện đúng sheet brand
+        if any('outlet' in c and 'code' in c for c in cols) or any(
+            'member' in c for c in cols
+        ) or any('nền tảng' in c or 'nen tang' in c for c in cols):
+          # bỏ dòng filter text nếu lọt vào
+          if len(df) and str(df.iloc[0, 0]).lower().startswith('bộ lọc'):
+            df = df.iloc[1:].reset_index(drop=True)
+          return df
+      except Exception:
+        continue
   return pd.DataFrame()
 
 
@@ -7881,7 +7997,12 @@ def check_mbs_mission(df_outlet, member_type, col_loai='_loai', col_actual='_act
     return all_focus_ok  # không bắt buộc NEW
   if mt in ('CAT3', 'BRAND3'):
     return all_focus_ok and has_new
-  # fallback: giữ logic cũ
+  # T11: Member type hệ thống mới
+  if 'VIPDAISU' in mt or 'DAISU' in mt:
+    return all_focus_ok  # ~ BRAND2
+  if 'BRAND_VIP' in mt or mt.endswith('VIP') or 'VIP' in mt:
+    return all_focus_ok and has_new  # ~ BRAND3
+  # fallback
   return has_new
 
 
@@ -8455,7 +8576,25 @@ def build_mbs_brand_report(df_brand, filter_nv=None, mcp_df=None):
   c_ten = find_col(df, ['Outlet Name', 'Outlet_name', 'Tên CH'])
   c_member = find_col(df, ['Member type', 'Member Type', 'Phân loại CAT'])
   c_loai = find_col(
-      df, ['Phân loại brand', 'Phan loai brand', 'Phân loại cat', 'Loại brand']
+      df,
+      [
+          'Phân loại cat/brand',
+          'Phân loại brand',
+          'Phan loai brand',
+          'Phân loại cat',
+          'Loại brand',
+          'Phân loại',
+      ],
+  )
+  c_brand_name = find_col(
+      df,
+      [
+          'Danh sách full cat/brand',
+          'Danh sách full brand',
+          'Brand',
+          'Nhãn hàng',
+          'CAT/BRAND',
+      ],
   )
   c_target = find_col(
       df,
@@ -8466,14 +8605,19 @@ def build_mbs_brand_report(df_brand, filter_nv=None, mcp_df=None):
           'Chỉ tiêu',
       ],
   )
-  # Actual = Doanh số thực đạt brand (KHÔNG lấy Not Cancel/Pending)
+  # Actual = Doanh số thực đạt CAT/BRAND (T11) hoặc brand (T10) — bỏ Not Cancel
   c_actual = None
   for c in df.columns:
     cl = str(c).strip().lower()
     if 'not cancel' in cl or 'pending' in cl:
       continue
-    if cl == 'doanh số thực đạt của brand' or (
-        'thực đạt' in cl and 'brand' in cl
+    if (
+        'thực đạt' in cl
+        and ('brand' in cl or 'cat/brand' in cl or 'cat' in cl)
+    ) or cl in (
+        'doanh số thực đạt của brand',
+        'doanh số thực đạt của cat/brand',
+        'doanh số thực đạt của cat/brand',
     ):
       c_actual = c
       break
@@ -15357,6 +15501,19 @@ with f2:
       '17. BÁO CÁO PERFORMANCE': 'PERF_CAT',
       '18. WEEKLY PREVIEW - MCP / ASO / %COV': 'WEEKLY_PREVIEW',
   }
+  # T11: không còn MBS CAT — chỉ MBS Brand
+  if get_month_key() == 'Thang11':
+    kpi_map = {k: v for k, v in kpi_map.items() if v != 'MBS_CAT'}
+    # đánh lại số thứ tự hiển thị cho gọn
+    _renum = []
+    for k, v in kpi_map.items():
+      # bỏ prefix số cũ "12. "
+      label = re.sub(r'^\d+\.\s*', '', k)
+      _renum.append((label, v))
+    kpi_map = {}
+    for i, (label, v) in enumerate(_renum, 1):
+      kpi_map[f'{i}. {label}'] = v
+
   selected_name = st.selectbox(
       '',
       list(kpi_map.keys()),
