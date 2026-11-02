@@ -3245,7 +3245,7 @@ def build_report(
     ok_day = pick_best_pc_per_outlet_day(ok)
     mtd = ok_day.groupby('Mã NVBH').size()
     ngay = ok_day[ok_day['date'] == report_date].groupby('Mã NVBH').size()
-    key, title = 'PC_BT', 'PC BT'
+    key, title = 'PC_BT', 'PC_BT'
 
   elif report_type == 'PC_ON':
     cfg = get_month_cfg()
@@ -15727,7 +15727,7 @@ with f2:
   kpi_map = {
       # ===== 8 KPI theo tháng =====
       '1. TURNOVER - Tổng doanh số bán ra': 'TURNOVER',
-      '2. PC BT': 'PC_BT',
+      '2. PC_BT': 'PC_BT',
       '3. LPPC - Bình quân line/PC (trừ Meat & Beer)': 'LPPC',
       f"4. {_cfg.get('aso_all_name', 'ASO_ALL')}": 'ASO_ALL',
       f'5. {_f1}': 'ASO_FOCUS',
