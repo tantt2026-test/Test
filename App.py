@@ -851,8 +851,11 @@ def load_cat_data():
 
 
 @st.cache_data(ttl=600)
-def load_brand_data():
-  """Load Data_Brand — quét header thật (bỏ dòng Bộ lọc), tìm trong data/ThangXX."""
+def load_brand_data(_month_key='Thang11'):
+  """Load Data_Brand — quét header thật (bỏ dòng Bộ lọc), tìm trong data/ThangXX.
+
+  _month_key: đưa vào cache key để đổi tháng / upload file mới không bị dính cache rỗng.
+  """
   try:
     _refresh_paths()
   except Exception:
@@ -876,6 +879,18 @@ def load_brand_data():
     if p in seen or not os.path.isfile(p):
       continue
     seen.add(p)
+    # Thử header=0 nhanh (file T11 sạch)
+    try:
+      df0 = pd.read_excel(p, header=0)
+      cols0 = [str(c).strip().lower() for c in df0.columns]
+      if (
+          any('outlet' in c and 'code' in c for c in cols0)
+          and any('member' in c for c in cols0)
+      ) or any('doanh số nền tảng' in c or 'nen tang' in c for c in cols0):
+        if not df0.empty:
+          return df0
+    except Exception:
+      pass
     try:
       raw = pd.read_excel(p, header=None, dtype=object)
     except Exception:
@@ -2476,28 +2491,32 @@ def process_brand_sales(df_rpt, df_brand):
     return df_brand
   c_code = c_code_list[0]
   c_brand = brand_col_name
-  col_val1_list = [
-      c
-      for c in df_out.columns
-      if 'doanh số thực đạt của brand' in str(c).lower() and 'not' not in str(c).lower()
-  ]
-  col_val2_list = [
-      c
-      for c in df_out.columns
-      if 'doanh số thực đạt của brand' in str(c).lower() and 'not' in str(c).lower()
-  ]
-  # Fallback tên cột doanh số brand phổ biến
+  def _is_actual_brand_col(c, want_pending=False):
+    cl = str(c).strip().lower()
+    if 'nền tảng' in cl or 'nen tang' in cl or 'điểm thưởng' in cl:
+      return False
+    has_actual = ('thực đạt' in cl) or ('thuc dat' in cl) or ('actual' in cl)
+    has_brand = ('brand' in cl) or ('cat/brand' in cl) or ('cat' in cl and 'brand' in cl)
+    has_pending = ('not cancel' in cl) or ('pending' in cl) or ('notcancel' in cl)
+    if not has_actual:
+      return False
+    if want_pending:
+      return has_pending
+    return (has_brand or 'doanh số thực đạt' in cl) and not has_pending
+
+  col_val1_list = [c for c in df_out.columns if _is_actual_brand_col(c, want_pending=False)]
+  col_val2_list = [c for c in df_out.columns if _is_actual_brand_col(c, want_pending=True)]
+  # Fallback: bất kỳ cột thực đạt không phải nền tảng
   if not col_val1_list:
     col_val1_list = [
         c for c in df_out.columns
-        if 'doanh số' in str(c).lower() and 'brand' in str(c).lower() and 'not' not in str(c).lower()
-    ]
-  if not col_val2_list:
-    col_val2_list = [
-        c for c in df_out.columns
-        if 'doanh số' in str(c).lower() and 'brand' in str(c).lower() and 'not' in str(c).lower()
+        if ('thực đạt' in str(c).lower() or 'thuc dat' in str(c).lower())
+        and 'not' not in str(c).lower()
+        and 'pending' not in str(c).lower()
+        and 'nền tảng' not in str(c).lower()
     ]
   if not col_val1_list:
+    # Không ghi đè được cột actual — vẫn trả master brand để hiển thị tab
     return df_brand
   col_val1 = col_val1_list[0]
   col_val2 = col_val2_list[0] if col_val2_list else col_val1
@@ -8657,24 +8676,19 @@ def build_mbs_brand_report(df_brand, filter_nv=None, mcp_df=None):
   c_actual = None
   for c in df.columns:
     cl = str(c).strip().lower()
-    if 'not cancel' in cl or 'pending' in cl:
+    if 'not cancel' in cl or 'pending' in cl or 'nền tảng' in cl:
       continue
-    if (
-        'thực đạt' in cl
-        and ('brand' in cl or 'cat/brand' in cl or 'cat' in cl)
-    ) or cl in (
-        'doanh số thực đạt của brand',
-        'doanh số thực đạt của cat/brand',
-        'doanh số thực đạt của cat/brand',
-    ):
+    if 'thực đạt' in cl or 'thuc dat' in cl:
       c_actual = c
-      break
+      # ưu tiên cột có brand/cat
+      if 'brand' in cl or 'cat' in cl:
+        break
   if not c_actual:
     for c in df.columns:
       cl = str(c).strip().lower()
-      if 'not cancel' in cl or 'pending' in cl:
+      if 'not cancel' in cl or 'pending' in cl or 'nền tảng' in cl:
         continue
-      if 'thực đạt' in cl or 'doanh so thuc dat' in cl:
+      if 'doanh số' in cl and ('đạt' in cl or 'dat' in cl):
         c_actual = c
         break
 
@@ -15304,8 +15318,17 @@ def load_prepared_cat(_month_key='Thang10'):
 @st.cache_data(ttl=600, show_spinner=False)
 def load_prepared_brand(_month_key='Thang10'):
   df, _ = load_main_data(_month_key)
-  brand = load_brand_data()
-  return process_brand_sales(df, brand)
+  brand = load_brand_data(str(_month_key))
+  if brand is None or brand.empty:
+    return pd.DataFrame()
+  try:
+    out = process_brand_sales(df, brand)
+    if out is None or out.empty:
+      return brand
+    return out
+  except Exception as e:
+    print('process_brand_sales error:', e)
+    return brand
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -15798,6 +15821,12 @@ _nav_opts = [
     '📋 DSKH_Combo OFF',
     '📋 DSKH_Combo ON',
 ]
+# T11: không còn MBS CAT
+try:
+  if get_month_key() == 'Thang11':
+    _nav_opts = [x for x in _nav_opts if 'MBS - CAT' not in x]
+except Exception:
+  pass
 _nav = st.radio(
     'Section', _nav_opts, horizontal=True,
     key='main_nav_section', label_visibility='collapsed',
@@ -16607,6 +16636,16 @@ if _nav == '📊 BÁO CÁO KPI':
 
   elif selected_kpi == 'MBS_BRAND':
     set_color_moc_for_kpi('MBS_BRAND')
+    if df_brand is None or getattr(df_brand, 'empty', True):
+      try:
+        df_brand = _lazy_brand(get_month_key())
+      except Exception:
+        df_brand = pd.DataFrame()
+    if df_brand is None or getattr(df_brand, 'empty', True):
+      try:
+        df_brand = load_brand_data(get_month_key())
+      except Exception:
+        df_brand = pd.DataFrame()
     result = build_mbs_brand_report(df_brand, filter_nv, mcp_df=mcp)
     groups = result['groups']
     df_detail = result['df_detail']
@@ -20326,15 +20365,27 @@ if _nav == '📦 TRACKING MBS - CAT':
 
 # ----- TAB BRAND -----
 if _nav == '🏷️ TRACKING MBS - BRAND':
-  if df_brand is None:
-    df_brand = _lazy_brand(get_month_key() if True else "Thang10")
+  if df_brand is None or (hasattr(df_brand, 'empty') and df_brand.empty):
+    try:
+      df_brand = _lazy_brand(get_month_key())
+    except Exception:
+      df_brand = pd.DataFrame()
+  if df_brand is None or df_brand.empty:
+    # Fallback: load master thô (không map RPT)
+    try:
+      df_brand = load_brand_data(get_month_key())
+    except Exception:
+      df_brand = pd.DataFrame()
   st.markdown(
       '<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
       ' font-size: 15px;">🏷️ TRACKING MBS - THEO THƯƠNG HIỆU (BRAND)</h3>',
       unsafe_allow_html=True,
   )
-  if df_brand.empty:
-    st.error("❌ Không tìm thấy Data_Brand.xlsx trong thư mục 'data'")
+  if df_brand is None or df_brand.empty:
+    st.error(
+        "❌ Không tìm thấy Data_Brand.xlsx trong "
+        f"`{get_data_dir()}/`. Upload file rồi **Xóa Cache & Reload**."
+    )
   else:
     col_nv = find_col(df_brand, ['SM Name', 'SM name', 'Tên NVBH', 'Nhân viên'])
     col_ma = find_col(df_brand, ['Outlet Code', 'Outlet_code', 'Mã CH', 'Mã khách hàng'])
