@@ -3245,7 +3245,7 @@ def build_report(
     ok_day = pick_best_pc_per_outlet_day(ok)
     mtd = ok_day.groupby('Mã NVBH').size()
     ngay = ok_day[ok_day['date'] == report_date].groupby('Mã NVBH').size()
-    key, title = 'PC_BT', 'PC_BT - Đơn hàng ≥1 line MOQ (L1 OFF, không trừ Meat/Beer)'
+    key, title = 'PC_BT', 'PC BT'
 
   elif report_type == 'PC_ON':
     cfg = get_month_cfg()
@@ -3723,10 +3723,16 @@ def _gap_and_bq_day(target, mtd, remain_days, as_int=True):
 
 @st.cache_data(ttl=600)
 def load_weekly_sales():
-  """Load file bán hàng lịch sử cho Weekly Preview (data-2 / WeeklyPreview_Sales)."""
+  """Load file bán hàng lịch sử cho Weekly Preview.
+
+  Nhận: data-2 / data-3 / data.xlsx / WeeklyPreview_Sales...
+  Bỏ dòng 'Bộ lọc được áp dụng' nếu có.
+  """
   preferred = [
       'data-2-2.xlsx', 'data-2-2.xls',
+      'data-3.xlsx', 'data-3.xls',
       'data-2.xlsx', 'data-2.xls',
+      'data.xlsx', 'data.xls',
       'WeeklyPreview_Sales.xlsx', 'WeeklyPreview_Sales.xls',
       'Weekly_Sales.xlsx', 'WEEKLY_SALES.xlsx',
   ]
@@ -3738,32 +3744,78 @@ def load_weekly_sales():
       break
   if path is None and os.path.isdir(get_data_dir()):
     try:
+      cands = []
       for fn in sorted(os.listdir(get_data_dir())):
-        low = fn.lower().replace(' ', '')
+        low = fn.lower().replace(' ', '').replace('_', '')
         if not low.endswith(('.xlsx', '.xls', '.xlsm')):
           continue
-        if 'weekly' in low or 'data-2' in low or low.startswith('data2'):
-          path = os.path.join(get_data_dir(), fn)
-          break
+        if (
+            'weekly' in low or 'data-2' in low or 'data-3' in low
+            or low.startswith('data2') or low.startswith('data3')
+            or (low.startswith('data') and 'brand' not in low
+                and 'mcp' not in low and 'cat' not in low
+                and 'target' not in low and 'combo' not in low)
+        ):
+          cands.append(os.path.join(get_data_dir(), fn))
+      cands.sort(key=lambda x: (
+          0 if ('data-2' in x.lower() or 'data-3' in x.lower()) else 1, x
+      ))
+      if cands:
+        path = cands[0]
     except Exception:
       pass
   if not path:
     return pd.DataFrame()
-  for hdr in (2, 0, 1, 3):
-    try:
-      df = pd.read_excel(path, header=hdr)
-      cols_up = [str(c).upper().replace(' ', '_') for c in df.columns]
-      has_outlet = any('OUTLET' in c and 'CODE' in c for c in cols_up)
-      has_sm = any('SM_NAME' in c or c == 'SMNAME' for c in cols_up)
-      has_month = any('MONTH' in c for c in cols_up)
-      if has_outlet and (has_sm or has_month):
-        return df
-    except Exception:
-      continue
+
   try:
-    return pd.read_excel(path, header=2)
+    raw = pd.read_excel(path, header=None, dtype=object)
   except Exception:
     return pd.DataFrame()
+  if raw is None or raw.empty:
+    return pd.DataFrame()
+
+  header_row = None
+  for i in range(min(10, len(raw))):
+    vals = [str(x).strip().lower() for x in raw.iloc[i].tolist() if pd.notna(x)]
+    joined = ' | '.join(vals)
+    if 'bộ lọc' in joined or 'bo loc' in joined:
+      continue
+    has_outlet = ('outlet' in joined and 'code' in joined) or 'outlet_code' in joined
+    has_sm = 'sm_name' in joined or 'sm name' in joined
+    has_month = 'month' in joined
+    if has_outlet and (has_sm or has_month) and len(vals) >= 8:
+      header_row = i
+      break
+  if header_row is None:
+    for hdr in (2, 0, 1, 3):
+      try:
+        df = pd.read_excel(path, header=hdr)
+        cols_up = [str(c).upper().replace(' ', '_') for c in df.columns]
+        has_outlet = any('OUTLET' in c and 'CODE' in c for c in cols_up)
+        has_sm = any('SM_NAME' in c or c == 'SMNAME' for c in cols_up)
+        has_month = any('MONTH' in c for c in cols_up)
+        if has_outlet and (has_sm or has_month):
+          return df
+      except Exception:
+        continue
+    try:
+      return pd.read_excel(path, header=2)
+    except Exception:
+      return pd.DataFrame()
+
+  cols = [
+      str(c).strip() if pd.notna(c) else f'Col_{j}'
+      for j, c in enumerate(raw.iloc[header_row].tolist())
+  ]
+  df = raw.iloc[header_row + 1:].copy()
+  df.columns = cols
+  df = df.dropna(how='all').reset_index(drop=True)
+  if len(df):
+    first = str(df.iloc[0, 0]).strip().lower()
+    if first in ('sub_region', 'sub region', 'month'):
+      df = df.iloc[1:].reset_index(drop=True)
+  return df
+
 
 
 def build_weekly_preview(mcp_df, sales_hist, df_rpt=None, filter_nv=None, months=None):
@@ -15675,7 +15727,7 @@ with f2:
   kpi_map = {
       # ===== 8 KPI theo tháng =====
       '1. TURNOVER - Tổng doanh số bán ra': 'TURNOVER',
-      '2. PC_BT - Đơn hàng ≥4 line MOQ (L1 OFF)': 'PC_BT',
+      '2. PC BT': 'PC_BT',
       '3. LPPC - Bình quân line/PC (trừ Meat & Beer)': 'LPPC',
       f"4. {_cfg.get('aso_all_name', 'ASO_ALL')}": 'ASO_ALL',
       f'5. {_f1}': 'ASO_FOCUS',
@@ -18448,18 +18500,41 @@ if _nav == '📊 BÁO CÁO KPI':
           data_files = sorted(os.listdir(get_data_dir()))
       except Exception:
         pass
-      has_d2 = os.path.isfile(os.path.join(get_data_dir(), 'data-2.xlsx'))
+      has_d2 = any(
+          os.path.isfile(os.path.join(get_data_dir(), n))
+          for n in ('data-2.xlsx', 'data-3.xlsx', 'data.xlsx')
+      )
       has_mcp = os.path.isfile(os.path.join(get_data_dir(), 'Data_MCP.xlsx'))
       n_sales = 0 if sales_hist is None else len(sales_hist)
       n_mcp = 0 if mcp is None else len(mcp)
+      months_in_sales = []
+      try:
+        if sales_hist is not None and not sales_hist.empty:
+          c_m = None
+          for c in sales_hist.columns:
+            if str(c).strip().lower() == 'month':
+              c_m = c
+              break
+          if c_m is not None:
+            months_in_sales = sorted(
+                sales_hist[c_m].dropna().astype(str).str.strip().unique().tolist()
+            )
+      except Exception:
+        pass
       file_list = ', '.join(data_files) if data_files else '(trống)'
       st.info(
           'File trong data/: ' + file_list
-          + ' | data-2.xlsx: ' + str(has_d2)
-          + ' | Data_MCP.xlsx: ' + str(has_mcp)
+          + ' | data-2/3: ' + str(has_d2)
+          + ' | Data_MCP: ' + str(has_mcp)
           + ' | sales rows: ' + str(n_sales)
           + ' | mcp rows: ' + str(n_mcp)
+          + ' | Tháng có trong sales: ' + (', '.join(months_in_sales) if months_in_sales else '(không có)')
       )
+      if months_in_sales and not any('06/2026' in m or m == '6/2026' for m in months_in_sales):
+        st.warning(
+            '⚠️ File bán hàng lịch sử **không có Tháng 06/2026** → cột ASO 06/2026 = 0 là đúng với data. '
+            'Upload lại file data-2/data-3 có đủ tháng 6 nếu cần xem ASO tháng 6.'
+        )
 
     # ---- Bảng OFF ----
     st.markdown(
