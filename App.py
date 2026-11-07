@@ -19372,18 +19372,95 @@ if _nav == '📊 BÁO CÁO KPI':
         try:
           _hv_brand = 'Mức đạt' in df_detail.columns
           if _hv_brand:
+            # Slicer riêng cho 2 bảng Tổng hợp theo NV
+            st.markdown(
+                '<p style="font-weight:800;color:#034ea2;margin:12px 0 4px 0;font-size:13px;">'
+                '🔍 Bộ lọc bảng Tổng hợp theo NV</p>',
+                unsafe_allow_html=True,
+            )
+            _nv_opts_sum = sorted([
+                str(x).strip() for x in df_show.get('Tên NVBH', pd.Series(dtype=str)).dropna().unique()
+                if str(x).strip() and str(x).strip().lower() not in ('nan', 'none')
+            ]) if 'Tên NVBH' in df_show.columns else []
+            _nhom_opts_sum = sorted([
+                int(x) for x in df_show.get('Nhóm', pd.Series(dtype=float)).dropna().unique()
+                if pd.notna(x)
+            ]) if 'Nhóm' in df_show.columns else [1, 2, 3, 4, 5, 6]
+            _nhom_labels = {
+                1: 'Nhóm 1 · Đã đạt MBS',
+                2: 'Nhóm 2 · Đạt DS, thiếu NV',
+                3: 'Nhóm 3 · Đạt NV, DS ≥50%',
+                4: 'Nhóm 4 · DS ≥60%, thiếu NV',
+                5: 'Nhóm 5 · Còn lại',
+                6: 'Nhóm 6 · Chưa phát sinh DS',
+            }
+            _nhom_disp = [f'{n} — {_nhom_labels.get(n, f"Nhóm {n}")}' for n in _nhom_opts_sum]
+            _cs1, _cs2 = st.columns(2)
+            with _cs1:
+              st.markdown(
+                  '<p class="filter-label" style="margin-bottom:2px;font-size:11px !important;">'
+                  '👤 Tên NVBH</p>',
+                  unsafe_allow_html=True,
+              )
+              _nv_sel_sum = st.multiselect(
+                  '', options=_nv_opts_sum, default=[],
+                  key='hv_nv_sum_filter', placeholder='Tất cả NVBH',
+                  label_visibility='collapsed',
+              )
+            with _cs2:
+              st.markdown(
+                  '<p class="filter-label" style="margin-bottom:2px;font-size:11px !important;">'
+                  '📦 Nhóm</p>',
+                  unsafe_allow_html=True,
+              )
+              _nhom_sel_disp = st.multiselect(
+                  '', options=_nhom_disp, default=[],
+                  key='hv_nhom_sum_filter', placeholder='Tất cả Nhóm',
+                  label_visibility='collapsed',
+              )
+            # Parse nhóm đã chọn
+            _nhom_sel_sum = []
+            for _d in _nhom_sel_disp:
+              try:
+                _nhom_sel_sum.append(int(str(_d).split('—')[0].strip().replace('Nhóm', '').strip().split()[0]))
+              except Exception:
+                try:
+                  _nhom_sel_sum.append(int(str(_d).split()[1]))
+                except Exception:
+                  pass
+            # Base data cho 2 bảng tổng hợp
+            _df_sum = df_show.copy()
+            if _nv_sel_sum and 'Tên NVBH' in _df_sum.columns:
+              _df_sum = _df_sum[_df_sum['Tên NVBH'].astype(str).str.strip().isin(_nv_sel_sum)]
+            if _nhom_sel_sum and 'Nhóm' in _df_sum.columns:
+              _df_sum = _df_sum[_df_sum['Nhóm'].isin(_nhom_sel_sum)]
+
             # Hội Viên Tết: tách 2 bảng BRAND_VIP & BRAND_VIPDAISU
-            # Dùng df_show (đã lọc Nhóm / BRAND / NV / %TH) để tổng hợp theo đúng bộ lọc
             for _mem, _lab in (
                 ('BRAND_VIP', 'BRAND_VIP'),
                 ('BRAND_VIPDAISU', 'BRAND_VIP Đại sứ'),
             ):
               df_nv_sum = build_mbs_nv_summary_asof(
-                  df_show, df, report_date, filter_nv=filter_nv, member_filter=_mem
+                  _df_sum, df, report_date, filter_nv=filter_nv, member_filter=_mem
               )
               if df_nv_sum is None or df_nv_sum.empty:
                 st.info(f'Không có dữ liệu tổng hợp NV — {_lab}.')
                 continue
+              # Nếu lọc theo NV trên summary, ẩn dòng không thuộc filter
+              if _nv_sel_sum and 'Tên NVBH' in df_nv_sum.columns:
+                _mask_nv = (
+                    df_nv_sum['Tên NVBH'].astype(str).str.strip().isin(_nv_sel_sum)
+                    | df_nv_sum['Tên NVBH'].astype(str).str.contains('TỔNG|TOTAL', case=False, na=False)
+                )
+                df_nv_sum = df_nv_sum[_mask_nv].copy()
+                # Đánh lại STT (trừ dòng tổng)
+                _is_tot = df_nv_sum['Tên NVBH'].astype(str).str.contains('TỔNG|TOTAL', case=False, na=False)
+                _body = df_nv_sum[~_is_tot].copy()
+                _tot = df_nv_sum[_is_tot].copy()
+                if not _body.empty:
+                  _body = _body.reset_index(drop=True)
+                  _body['STT'] = range(1, len(_body) + 1)
+                df_nv_sum = pd.concat([_body, _tot], ignore_index=True)
               st.markdown(
                   render_mbs_nv_summary_html(
                       df_nv_sum,
@@ -19398,7 +19475,8 @@ if _nav == '📊 BÁO CÁO KPI':
                 'Actual = Doanh số RPT từ đầu tháng → ngày BC | '
                 'Target & Nhiệm vụ lấy từ Data_Brand | '
                 'Nhóm 1 = Actual ≥ 95% Target và đạt nhiệm vụ | '
-                'Điểm thưởng DK = 1,2% / 1,5% / 2% Actual (đạt 95% / 100% / 105%)'
+                'Điểm thưởng DK = 1,2% / 1,5% / 2% Actual (đạt 95% / 100% / 105%) | '
+                'Bộ lọc phía trên chỉ áp dụng cho 2 bảng Tổng hợp theo NV'
             )
           else:
             df_nv_sum = build_mbs_nv_summary_asof(
