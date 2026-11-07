@@ -4777,6 +4777,311 @@ def build_weekly_lppc_vip(mcp_df, sales_hist, df_rpt=None, filter_nv=None, month
 
 
 
+
+def build_cov_mcp_off_vip(mcp_df, df_rpt, report_date, filter_nv=None, sales_hist=None):
+  """COV MCP OFF theo nhóm VIP3 / VIP5 / VIPSI — Tháng T (tháng BC).
+
+  MCP: số CH OFF thuộc nhóm VIP trên Data_MCP (theo NV).
+  ASO: số CH unique có đơn trong tháng T (RPT), thuộc nhóm VIP đó.
+  % COV = ASO / MCP * 100.
+  """
+  groups = ('VIP3', 'VIP5', 'VIPSI')
+  cols = ['STT', 'Tên NVBH']
+  for g in groups:
+    cols += [f'MCP {g}', f'ASO {g}', f'% COV {g}']
+  empty = pd.DataFrame(columns=cols)
+  if mcp_df is None or mcp_df.empty:
+    return empty
+
+  def _nma(x):
+    if pd.isna(x):
+      return ''
+    s = str(x).strip()
+    if s.endswith('.0'):
+      s = s[:-2]
+    try:
+      return str(int(float(s)))
+    except Exception:
+      return s
+
+  vip_map = _mcp_vip_outlet_map(mcp_df)
+  mcp = mcp_df.copy()
+  c_nv = find_col(mcp, ['SM name', 'SM Name', 'Tên NVBH', 'Nhân viên BH'])
+  c_ma = find_col(mcp, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
+  c_l1 = find_col(mcp, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel'])
+  if not c_ma or not c_nv:
+    return empty
+  mcp['_ma'] = mcp[c_ma].map(_nma)
+  mcp['_nv'] = mcp[c_nv].astype(str).str.strip()
+  mcp = mcp[mcp['_nv'].str.lower() != 'nan']
+  mcp = mcp[~mcp['_nv'].str.contains('vacant|CDGT-SMVL', case=False, na=False)]
+  if c_l1:
+    mcp = mcp[mcp[c_l1].astype(str).str.lower().str.contains('off', na=False)]
+  if nv_selected(filter_nv):
+    mcp = filter_df_by_nv(mcp, '_nv', filter_nv)
+
+  ma_nv = {}
+  for _, r in mcp.iterrows():
+    ma, nv = r['_ma'], r['_nv']
+    if ma and nv:
+      ma_nv[ma] = nv
+
+  mcp_cnt = {g: {} for g in groups}
+  for g in groups:
+    for ma in vip_map.get(g, set()):
+      nv = ma_nv.get(ma)
+      if not nv:
+        continue
+      mcp_cnt[g][nv] = mcp_cnt[g].get(nv, 0) + 1
+
+  rd = report_date if isinstance(report_date, date) else pd.Timestamp(report_date).date()
+  y, m = rd.year, rd.month
+  start_d = date(y, m, 1)
+  end_d = date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)
+
+  aso_cnt = {g: {} for g in groups}
+  try:
+    d = None
+    if df_rpt is not None and not df_rpt.empty and 'date' in df_rpt.columns:
+      d = df_rpt[(df_rpt['date'] >= start_d) & (df_rpt['date'] < end_d)].copy()
+      if nv_selected(filter_nv) and 'Tên NVBH' in d.columns:
+        d = filter_df_by_nv(d, 'Tên NVBH', filter_nv)
+    if d is not None and not d.empty and 'Mã CH' in d.columns:
+      d['_ma'] = d['Mã CH'].map(_nma)
+      if 'Tên NVBH' in d.columns:
+        d['_nv'] = d['Tên NVBH'].astype(str).str.strip()
+      else:
+        d['_nv'] = d['_ma'].map(ma_nv)
+      for g in groups:
+        gset = vip_map.get(g, set())
+        sub = d[d['_ma'].isin(gset)]
+        if sub.empty:
+          continue
+        for nv, gg in sub.groupby('_nv'):
+          if not nv or str(nv).lower() in ('nan', 'none'):
+            continue
+          aso_cnt[g][nv] = int(gg['_ma'].nunique())
+  except Exception:
+    pass
+
+  nvs = set()
+  for g in groups:
+    nvs |= set(mcp_cnt[g].keys()) | set(aso_cnt[g].keys())
+  nvs = sorted([n for n in nvs if n and str(n).lower() not in ('nan', 'none')])
+
+  rows = []
+  for nv in nvs:
+    row = {'STT': 0, 'Tên NVBH': nv}
+    for g in groups:
+      mc = int(mcp_cnt[g].get(nv, 0))
+      aso = int(aso_cnt[g].get(nv, 0))
+      pct = round(aso / mc * 100, 1) if mc else 0.0
+      row[f'MCP {g}'] = mc
+      row[f'ASO {g}'] = aso
+      row[f'% COV {g}'] = f'{pct}%'
+      row[f'_pct_{g}'] = pct
+    rows.append(row)
+
+  if not rows:
+    return empty
+  out = pd.DataFrame(rows)
+  out['_avg'] = out[[f'_pct_{g}' for g in groups]].mean(axis=1)
+  out = out.sort_values('_avg', ascending=False).reset_index(drop=True)
+  out['STT'] = range(1, len(out) + 1)
+
+  tot = {'STT': '', 'Tên NVBH': f'SS {_ss_name()} Total'}
+  for g in groups:
+    mc = int(out[f'MCP {g}'].sum())
+    aso = int(out[f'ASO {g}'].sum())
+    pct = round(aso / mc * 100, 1) if mc else 0.0
+    tot[f'MCP {g}'] = mc
+    tot[f'ASO {g}'] = aso
+    tot[f'% COV {g}'] = f'{pct}%'
+  out = out.drop(columns=[c for c in out.columns if str(c).startswith('_')], errors='ignore')
+  out = pd.concat([out, pd.DataFrame([tot])], ignore_index=True)
+  keep = [c for c in cols if c in out.columns]
+  return out[keep]
+
+
+def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng T)'):
+  """Format bảng COV VIP giống các bảng KPI / Weekly."""
+  if df is None or df.empty:
+    return f'<p style="color:#718096;">Không có dữ liệu — {title}</p>'
+  cols = [c for c in df.columns if not str(c).startswith('_')]
+  th = (
+      'background-color:#1a365d !important;color:#ffffff !important;'
+      'font-weight:800 !important;text-align:center !important;'
+      'border:1px solid #2b6cb0 !important;padding:6px 8px;font-size:11px;white-space:nowrap;'
+  )
+  td = (
+      'border:1px solid #bce2f5 !important;padding:5px 6px;font-size:11px;'
+      'text-align:center !important;white-space:nowrap;'
+  )
+  html = [
+      f'<h4 style="color:#034ea2;font-weight:800;margin:16px 0 6px 0;">{title}</h4>',
+      '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:12px;">',
+      '<table class="custom-kpi-table" style="border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;">',
+      '<thead><tr>',
+  ]
+  for c in cols:
+    sticky = ''
+    if c == 'STT':
+      sticky = 'position:sticky;left:0;z-index:3;'
+    elif c == 'Tên NVBH':
+      sticky = 'position:sticky;left:42px;z-index:3;'
+    html.append(f'<th style="{th}{sticky}">{c}</th>')
+  html.append('</tr></thead><tbody>')
+
+  for pos, (_, row) in enumerate(df.iterrows()):
+    is_tot = 'TOTAL' in str(row.get('Tên NVBH', '')).upper() or 'TỔNG' in str(row.get('Tên NVBH', '')).upper()
+    bg = '#1a365d' if is_tot else ('#e6f4fc' if pos % 2 == 0 else '#ffffff')
+    fg = '#ffffff' if is_tot else '#1a202c'
+    html.append('<tr' + (' class="row-total"' if is_tot else '') + '>')
+    for c in cols:
+      val = row.get(c, '')
+      if pd.isna(val):
+        val = ''
+      sticky = ''
+      if c == 'STT':
+        sticky = f'position:sticky;left:0;z-index:1;background-color:{bg} !important;'
+      elif c == 'Tên NVBH':
+        sticky = f'position:sticky;left:42px;z-index:1;background-color:{bg} !important;text-align:left !important;font-weight:600;'
+      is_pct = str(c).startswith('%')
+      style_extra = ''
+      cls = 'row-total-cell' if is_tot else ''
+      if is_pct:
+        try:
+          style_extra = color_pct_bg(val)
+          cls = (color_pct_class(val) + (' row-total-cell' if is_tot else '')).strip()
+        except Exception:
+          pass
+      html.append(
+          f'<td class="{cls}" style="{td}background-color:{bg} !important;color:{fg} !important;'
+          f'font-weight:{"900" if is_tot else "600"};{sticky}{style_extra}">{val}</td>'
+      )
+    html.append('</tr>')
+  html.append('</tbody></table></div>')
+  return ''.join(html)
+
+
+def build_weekly_trend_comments(df, title, pct_prefix='% COV'):
+  """Nhận xét tăng/giảm theo % từng tháng cho bảng Weekly multi-month.
+
+  - So sánh Tháng T với T-1, T-2, T-3 (nếu có)
+  - Xu hướng 3 tháng gần nhất
+  """
+  if df is None or df.empty:
+    return ''
+
+  month_labs = []
+  col_by_lab = {}
+  for c in df.columns:
+    cs = str(c)
+    if '|' not in cs:
+      continue
+    prefix, lab = cs.split('|', 1)
+    prefix = prefix.strip()
+    lab = lab.strip()
+    if pct_prefix and pct_prefix.lower() in prefix.lower():
+      col_by_lab[lab] = c
+      if lab not in month_labs:
+        month_labs.append(lab)
+
+  if not month_labs:
+    for c in df.columns:
+      cs = str(c)
+      if '|' in cs and (cs.startswith('%') or 'LPPC' in cs.upper() or cs.upper().startswith('PC')):
+        _, lab = cs.split('|', 1)
+        lab = lab.strip()
+        col_by_lab[lab] = c
+        if lab not in month_labs:
+          month_labs.append(lab)
+
+  def _lab_key(lab):
+    try:
+      mm, yy = lab.split('/')
+      return int(yy), int(mm)
+    except Exception:
+      return (0, 0)
+
+  month_labs = sorted(month_labs, key=_lab_key)
+  if len(month_labs) < 2:
+    return (
+        f'<div class="note-box" style="margin-top:8px;"><b>NHẬN XÉT {title}:</b> '
+        f'Chưa đủ dữ liệu nhiều tháng để đánh giá tăng/giảm.</div>'
+    )
+
+  body = df[~df['Tên NVBH'].astype(str).str.contains('TOTAL|TỔNG', case=False, na=False)].copy()
+  if body.empty:
+    return ''
+
+  def _pct(row, lab):
+    c = col_by_lab.get(lab)
+    if not c:
+      return None
+    try:
+      return float(str(row.get(c, '0')).replace('%', '').replace(',', '.').strip() or 0)
+    except Exception:
+      return None
+
+  t_lab = month_labs[-1]
+  prev_labs = month_labs[:-1][-3:]
+
+  up_vs = {lab: [] for lab in prev_labs}
+  down_vs = {lab: [] for lab in prev_labs}
+  trend_up, trend_down = [], []
+
+  for _, r in body.iterrows():
+    nv = str(r.get('Tên NVBH', '')).strip()
+    if not nv:
+      continue
+    short = nv.split()[-1] if nv.split() else nv
+    pt = _pct(r, t_lab)
+    if pt is None:
+      continue
+    for lab in prev_labs:
+      pp = _pct(r, lab)
+      if pp is None:
+        continue
+      if pt > pp + 0.3:
+        up_vs[lab].append((short, pt - pp))
+      elif pt < pp - 0.3:
+        down_vs[lab].append((short, pt - pp))
+
+    last3 = month_labs[-3:] if len(month_labs) >= 3 else month_labs
+    vals = [v for v in (_pct(r, lab) for lab in last3) if v is not None]
+    if len(vals) >= 2:
+      if vals[-1] > vals[0] + 0.5:
+        trend_up.append((short, vals[0], vals[-1]))
+      elif vals[-1] < vals[0] - 0.5:
+        trend_down.append((short, vals[0], vals[-1]))
+
+  lines = []
+  lines.append(f'<div style="font-weight:800;color:#034ea2;margin-bottom:6px;">📊 NHẬN XÉT TĂNG/GIẢM — {title}</div>')
+  lines.append(f'<div style="font-size:12.5px;color:#2d3748;margin-bottom:4px;">Tháng T = <b>{t_lab}</b> | So với: {", ".join(prev_labs)}</div>')
+  lines.append('<ul style="margin:0;padding-left:18px;line-height:1.55;font-size:13px;">')
+  for lab in prev_labs:
+    up = sorted(up_vs[lab], key=lambda x: -x[1])[:5]
+    down = sorted(down_vs[lab], key=lambda x: x[1])[:5]
+    up_s = ', '.join(f'{n} ({d:+.1f})' for n, d in up) if up else '—'
+    down_s = ', '.join(f'{n} ({d:+.1f})' for n, d in down) if down else '—'
+    lines.append(
+        f'<li><b>T ({t_lab}) vs {lab}:</b> '
+        f'<span style="color:#228b22;font-weight:700;">Tăng:</span> {up_s} · '
+        f'<span style="color:#c53030;font-weight:700;">Giảm:</span> {down_s}</li>'
+    )
+  tu = ', '.join(f'{n} ({a:.1f}→{b:.1f})' for n, a, b in sorted(trend_up, key=lambda x: -(x[2]-x[1]))[:5]) or '—'
+  td_ = ', '.join(f'{n} ({a:.1f}→{b:.1f})' for n, a, b in sorted(trend_down, key=lambda x: (x[2]-x[1]))[:5]) or '—'
+  lines.append(
+      f'<li><b>Xu hướng 3 tháng gần nhất:</b> '
+      f'<span style="color:#228b22;font-weight:700;">Cải thiện:</span> {tu} · '
+      f'<span style="color:#c53030;font-weight:700;">Sụt giảm:</span> {td_}</li>'
+  )
+  lines.append('</ul>')
+  return f'<div class="note-box" style="margin:8px 0 14px 0;">{"".join(lines)}</div>'
+
+
+
 def render_weekly_lppc_vip_html(df, timegone_pct=None):
   """Bảng LPPC VIP tách VIP3 / VIP5 / VIPSI theo tháng."""
   if df is None or df.empty:
@@ -20329,6 +20634,36 @@ if _nav == '📊 BÁO CÁO KPI':
           mime='text/csv',
           key='dl_weekly_off',
       )
+      try:
+        st.markdown(
+            build_weekly_trend_comments(df_off, 'COV MCP OFF', pct_prefix='% COV'),
+            unsafe_allow_html=True,
+        )
+      except Exception as _e_cmt:
+        st.caption(f'Nhận xét COV OFF: {_e_cmt}')
+
+    # ---- COV MCP OFF theo VIP (Tháng T) ----
+    try:
+      df_cov_vip = build_cov_mcp_off_vip(
+          mcp, df, report_date, filter_nv=filter_nv, sales_hist=sales_hist
+      )
+      if df_cov_vip is not None and not df_cov_vip.empty:
+        st.markdown(
+            render_cov_vip_html(
+                df_cov_vip,
+                title=f'COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng {report_date.strftime("%m/%Y")})',
+            ),
+            unsafe_allow_html=True,
+        )
+        st.download_button(
+            '📥 Tải CSV COV MCP OFF VIP',
+            data=df_cov_vip.to_csv(index=False).encode('utf-8-sig'),
+            file_name=f'COV_MCP_OFF_VIP_{report_date.strftime("%Y%m%d")}.csv',
+            mime='text/csv',
+            key='dl_weekly_cov_vip',
+        )
+    except Exception as _e_vip:
+      st.caption(f'COV VIP OFF: {_e_vip}')
 
     # ---- Bảng ON ----
     st.markdown(
@@ -20347,6 +20682,13 @@ if _nav == '📊 BÁO CÁO KPI':
           mime='text/csv',
           key='dl_weekly_on',
       )
+      try:
+        st.markdown(
+            build_weekly_trend_comments(df_on, 'COV MCP ON', pct_prefix='% COV'),
+            unsafe_allow_html=True,
+        )
+      except Exception as _e_cmt:
+        st.caption(f'Nhận xét COV ON: {_e_cmt}')
 
     # ---- Bảng LPPC OFF ----
     st.markdown(
@@ -20376,6 +20718,13 @@ if _nav == '📊 BÁO CÁO KPI':
           mime='text/csv',
           key='dl_weekly_lppc',
       )
+      try:
+        st.markdown(
+            build_weekly_trend_comments(df_lppc, 'LPPC OFF', pct_prefix='LPPC'),
+            unsafe_allow_html=True,
+        )
+      except Exception as _e_cmt:
+        st.caption(f'Nhận xét LPPC: {_e_cmt}')
 
     # ---- Bảng LPPC OFF VIP3 / VIP5 / VIPSI ----
     st.markdown(
@@ -20405,6 +20754,13 @@ if _nav == '📊 BÁO CÁO KPI':
           mime='text/csv',
           key='dl_weekly_lppc_vip',
       )
+      try:
+        st.markdown(
+            build_weekly_trend_comments(df_lppc_vip, 'LPPC OFF VIP', pct_prefix='LPPC VIP3'),
+            unsafe_allow_html=True,
+        )
+      except Exception as _e_cmt:
+        st.caption(f'Nhận xét LPPC VIP: {_e_cmt}')
 
     # ---- Bảng PC/SM/Day OFF ----
     st.markdown(
@@ -20431,6 +20787,13 @@ if _nav == '📊 BÁO CÁO KPI':
           mime='text/csv',
           key='dl_weekly_pcday',
       )
+      try:
+        st.markdown(
+            build_weekly_trend_comments(df_pcday, 'PC/SM/DAY OFF', pct_prefix='PC'),
+            unsafe_allow_html=True,
+        )
+      except Exception as _e_cmt:
+        st.caption(f'Nhận xét PC/SM/Day: {_e_cmt}')
 
     # ---- Tổng hợp ĐH Trái Tuyến MTD ----
     st.markdown(
@@ -20562,6 +20925,30 @@ if _nav == '📊 BÁO CÁO KPI':
           else x
       )
     st.markdown(render_html_table(_df_show), unsafe_allow_html=True)
+
+    # ASO ALL: COV MCP OFF theo VIP3/VIP5/VIPSI (Tháng T)
+    if selected_kpi == 'ASO_ALL':
+      try:
+        df_cov_vip_aso = build_cov_mcp_off_vip(
+            mcp, df, report_date, filter_nv=filter_nv
+        )
+        if df_cov_vip_aso is not None and not df_cov_vip_aso.empty:
+          st.markdown(
+              render_cov_vip_html(
+                  df_cov_vip_aso,
+                  title=f'COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng {report_date.strftime("%m/%Y")})',
+              ),
+              unsafe_allow_html=True,
+          )
+          st.download_button(
+              '📥 Tải CSV COV MCP OFF VIP (ASO ALL)',
+              data=df_cov_vip_aso.to_csv(index=False).encode('utf-8-sig'),
+              file_name=f'ASO_ALL_COV_VIP_{report_date.strftime("%Y%m%d")}.csv',
+              mime='text/csv',
+              key='dl_aso_cov_vip',
+          )
+      except Exception as _e_aso_vip:
+        st.caption(f'COV VIP (ASO ALL): {_e_aso_vip}')
 
     # Chi tiết ĐH/SP cho PC BT (OFF) & PC ON (ON) + Slicer
     if selected_kpi in ('PC_BT', 'PC_ON'):
