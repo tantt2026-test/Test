@@ -19057,7 +19057,7 @@ if _nav == '📊 BÁO CÁO KPI':
         # Tổng hợp theo NV — chốt đạt theo ngày BC (Actual RPT MTD→ngày)
         try:
           df_nv_sum = build_mbs_nv_summary_asof(
-              df_detail, df, report_date, filter_nv=filter_nv
+              df_show, df, report_date, filter_nv=filter_nv
           )
           if df_nv_sum is not None and not df_nv_sum.empty:
             st.markdown(
@@ -19373,12 +19373,13 @@ if _nav == '📊 BÁO CÁO KPI':
           _hv_brand = 'Mức đạt' in df_detail.columns
           if _hv_brand:
             # Hội Viên Tết: tách 2 bảng BRAND_VIP & BRAND_VIPDAISU
+            # Dùng df_show (đã lọc Nhóm / BRAND / NV / %TH) để tổng hợp theo đúng bộ lọc
             for _mem, _lab in (
                 ('BRAND_VIP', 'BRAND_VIP'),
                 ('BRAND_VIPDAISU', 'BRAND_VIP Đại sứ'),
             ):
               df_nv_sum = build_mbs_nv_summary_asof(
-                  df_detail, df, report_date, filter_nv=filter_nv, member_filter=_mem
+                  df_show, df, report_date, filter_nv=filter_nv, member_filter=_mem
               )
               if df_nv_sum is None or df_nv_sum.empty:
                 st.info(f'Không có dữ liệu tổng hợp NV — {_lab}.')
@@ -19401,7 +19402,7 @@ if _nav == '📊 BÁO CÁO KPI':
             )
           else:
             df_nv_sum = build_mbs_nv_summary_asof(
-                df_detail, df, report_date, filter_nv=filter_nv
+                df_show, df, report_date, filter_nv=filter_nv
             )
             if df_nv_sum is not None and not df_nv_sum.empty:
               st.markdown(
