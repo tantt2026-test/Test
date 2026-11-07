@@ -3871,14 +3871,90 @@ def _weekly_cur():
   return int(cfg.get('year', 2026)), int(cfg.get('month', 10))
 
 
-def _weekly_months(n=5):
-  """n tháng gần nhất, kết thúc ở tháng đang chọn (T10 → 06..10/2026, T11 → 07..11/2026)."""
-  y, m = _weekly_cur()
-  out = []
-  for _ in range(n):
-    out.append((y, m))
-    y, m = (y - 1, 12) if m == 1 else (y, m - 1)
-  return out[::-1]
+def _parse_ym_value(v):
+  """Parse giá trị Month từ data → (year, month) hoặc None.
+  Hỗ trợ: 06/2026, 6/2026, 2026-06, 2026/06, 202606, Timestamp, datetime.
+  """
+  if v is None or (isinstance(v, float) and pd.isna(v)):
+    return None
+  if hasattr(v, 'year') and hasattr(v, 'month'):
+    try:
+      return int(v.year), int(v.month)
+    except Exception:
+      pass
+  s = str(v).strip()
+  if not s or s.lower() in ('nan', 'none', 'nat'):
+    return None
+  # 06/2026 or 6/2026 or 06-2026
+  m = re.match(r'^(\d{1,2})[/-](\d{4})$', s)
+  if m:
+    return int(m.group(2)), int(m.group(1))
+  # 2026/06 or 2026-06
+  m = re.match(r'^(\d{4})[/-](\d{1,2})$', s)
+  if m:
+    return int(m.group(1)), int(m.group(2))
+  # 202606
+  m = re.match(r'^(\d{4})(\d{2})$', s)
+  if m:
+    return int(m.group(1)), int(m.group(2))
+  # try pandas
+  try:
+    ts = pd.to_datetime(v, errors='coerce', dayfirst=True)
+    if pd.notna(ts):
+      return int(ts.year), int(ts.month)
+  except Exception:
+    pass
+  return None
+
+
+def _weekly_months(sales_hist=None, df_rpt=None):
+  """Auto lấy danh sách tháng theo data đang có (≤ tháng BC đang chọn).
+  - Lấy từ cột Month của sales_hist (data-2)
+  - Bổ sung từ date của RPT nếu có
+  - Luôn gồm tháng báo cáo hiện tại
+  - Sort tăng dần theo thời gian
+  """
+  y_cur, m_cur = _weekly_cur()
+  found = set()
+  found.add((y_cur, m_cur))
+
+  if sales_hist is not None and not getattr(sales_hist, 'empty', True):
+    c_month = find_col(sales_hist, ['Month', 'Tháng', 'YearMonth', 'YEARMONTH', 'Ym'])
+    if c_month:
+      for v in sales_hist[c_month].dropna().unique().tolist():
+        ym = _parse_ym_value(v)
+        if ym:
+          found.add(ym)
+    # fallback: cột date nếu có
+    c_date = find_col(sales_hist, ['Date', 'Ngày', 'Order Date', 'Invoice Date'])
+    if c_date and len(found) <= 1:
+      try:
+        dts = pd.to_datetime(sales_hist[c_date], errors='coerce', dayfirst=True).dropna()
+        for ts in dts:
+          found.add((int(ts.year), int(ts.month)))
+      except Exception:
+        pass
+
+  if df_rpt is not None and not getattr(df_rpt, 'empty', True) and 'date' in getattr(df_rpt, 'columns', []):
+    try:
+      for d in df_rpt['date'].dropna().unique().tolist():
+        if hasattr(d, 'year'):
+          found.add((int(d.year), int(d.month)))
+        else:
+          ym = _parse_ym_value(d)
+          if ym:
+            found.add(ym)
+    except Exception:
+      pass
+
+  # Chỉ giữ tháng <= tháng BC
+  out = sorted(
+      (y, m) for y, m in found
+      if (y < y_cur) or (y == y_cur and m <= m_cur)
+  )
+  if not out:
+    out = [(y_cur, m_cur)]
+  return out
 
 
 def build_weekly_preview(mcp_df, sales_hist, df_rpt=None, filter_nv=None, months=None):
@@ -3891,7 +3967,7 @@ def build_weekly_preview(mcp_df, sales_hist, df_rpt=None, filter_nv=None, months
   Hiển thị Tên NVBH lấy từ MCP hiện tại theo Position code.
   """
   if months is None:
-    months = _weekly_months()
+    months = _weekly_months(sales_hist=sales_hist, df_rpt=df_rpt)
 
   def _empty():
     cols = ['STT', 'Tên NVBH', 'Position code']
@@ -4263,7 +4339,7 @@ def _lppc_from_orders(df_lines):
 def build_weekly_lppc(mcp_df, sales_hist, df_rpt=None, filter_nv=None, months=None):
   """Bảng LPPC Weekly — chỉ Kênh OFF, logic giống KPI LPPC, map Position code."""
   if months is None:
-    months = _weekly_months()
+    months = _weekly_months(sales_hist=sales_hist, df_rpt=df_rpt)
 
   empty_cols = ['STT', 'Tên NVBH'] + [x for y, m in months for x in (f'PC|{m:02d}/{y}', f'LPPC|{m:02d}/{y}')]
   empty = pd.DataFrame(columns=empty_cols)
@@ -4470,7 +4546,7 @@ def build_weekly_lppc_vip(mcp_df, sales_hist, df_rpt=None, filter_nv=None, month
   Map Mã CH với Data_MCP (VIP MCH) → lọc đơn OFF → LPPC (trừ Meat/Beer).
   """
   if months is None:
-    months = _weekly_months()
+    months = _weekly_months(sales_hist=sales_hist, df_rpt=df_rpt)
   vip_groups = ('VIP3', 'VIP5', 'VIPSI')
   empty_cols = ['STT', 'Tên NVBH']
   for y, m in months:
@@ -5107,7 +5183,7 @@ def build_weekly_pc_sm_day(mcp_df, sales_hist, df_rpt=None, filter_nv=None, mont
   - PC/DAY: tổng PC OFF (MOQ, max 1 PC/CH/ngày) ÷ số ngày làm việc
   """
   if months is None:
-    months = _weekly_months()
+    months = _weekly_months(sales_hist=sales_hist, df_rpt=df_rpt)
 
   empty_cols = ['STT', 'Tên NVBH']
   for y, m in months:
@@ -6062,7 +6138,7 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
   Số lượng: lấy Tổng chẵn (Thùng) + Tổng lẻ (Lẻ) từ file bán hàng.
   """
   cols = [
-      'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'L1', 'Mã ĐH',
+      'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'L1', 'Mã ĐH', 'KM',
       'Mã SP', 'Tên sản phẩm', 'SL Thùng', 'SL Lẻ', 'Thành tiền', 'Ngày ĐH',
   ]
   empty = pd.DataFrame(columns=cols)
@@ -6131,6 +6207,7 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
         'Tên KH': str(r.get(ten_kh_col, '')).strip() if ten_kh_col else '',
         'L1': str(r.get('L1', '')).strip() if 'L1' in d.columns else '',
         'Mã ĐH': str(r.get(order_col, '')).strip() if order_col else '',
+        'KM': '✓' if _get_km_flag(r) else '',
         'Mã SP': str(r.get(sp_col, '')).strip() if sp_col else '',
         'Tên sản phẩm': str(r.get(name_col, '')).strip() if name_col else '',
         'SL Thùng': float(r.get('_thung', 0) or 0),
@@ -6150,6 +6227,7 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
       'Tên KH': '',
       'L1': '',
       'Mã ĐH': '',
+      'KM': '',
       'Mã SP': '',
       'Tên sản phẩm': '',
       'SL Thùng': float(out['SL Thùng'].sum()),
@@ -6400,6 +6478,7 @@ def render_turnover_detail_html(df, title, money_cols=None, max_rows=15):
       val = _fmt(c, row.get(c, ''))
       al = 'left' if c in ('Tên NVBH', 'Tên KH', 'Tên sản phẩm') else 'center'
       sticky = ''
+      extra = ''
       # Sticky + đường kẻ phân cột rõ (border-right đậm hơn)
       if c == 'STT':
         sticky = (
@@ -6411,8 +6490,12 @@ def render_turnover_detail_html(df, title, money_cols=None, max_rows=15):
             f'position:sticky;left:40px;z-index:1;background-color:{bg} !important;'
             f'border-right:2px solid #63b3ed !important;box-shadow:2px 0 0 #63b3ed;'
         )
+      if c == 'KM' and str(val).strip() in ('✓', '✔'):
+        extra = 'color:#228b22 !important;font-weight:900 !important;font-size:15px;'
+      if c == 'Tên sản phẩm':
+        extra += 'text-align:left !important;white-space:normal;min-width:180px;'
       html.append(
-          f'<td style="{td_base}background-color:{bg} !important;text-align:{al} !important;{sticky}">{val}</td>'
+          f'<td style="{td_base}background-color:{bg} !important;text-align:{al} !important;{sticky}{extra}">{val}</td>'
       )
     html.append('</tr>')
 
@@ -19926,7 +20009,7 @@ if _nav == '📊 BÁO CÁO KPI':
           '||'.join([str(x) for x in filter_nv]) if isinstance(filter_nv, list)
           else (str(filter_nv) if filter_nv else '__ALL__')
       )
-      _wk = f'weekly_prev_{_mk_w}_{_fnv_w}_{report_date}'
+      _wk = f'weekly_prev6_{_mk_w}_{_fnv_w}_{report_date}'
       if _wk in st.session_state and not st.session_state.get('_force_reload'):
         df_off, df_on, sales_hist = st.session_state[_wk]
       else:
