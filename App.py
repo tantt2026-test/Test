@@ -6154,15 +6154,15 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
 
 
 def _filter_turnover_detail_df(df, f_ngay=None, f_nv=None, f_ma=None, f_ten=None, f_l1=None):
-  """Lọc bảng chi tiết theo slicer (sau khi đã build)."""
+  """Lọc bảng chi tiết theo slicer (sau khi đã build).
+  f_ma / f_ten: chuỗi nhập tự do → contains (không phân biệt hoa thường).
+  """
   if df is None or df.empty:
     return df
   out = df.copy()
   is_tot = out['Tên NVBH'].astype(str).str.contains('TỔNG|TOTAL', case=False, na=False) if 'Tên NVBH' in out.columns else pd.Series(False, index=out.index)
   body = out[~is_tot].copy()
-  tot = out[is_tot].copy()
   if f_ngay:
-    # Ngày ĐH dạng dd/mm/yyyy hoặc dd/mm/yyyy HH:MM — so khớp phần ngày
     def _day_key(s):
       s = str(s).strip()
       return s[:10] if len(s) >= 10 else s
@@ -6171,30 +6171,41 @@ def _filter_turnover_detail_df(df, f_ngay=None, f_nv=None, f_ma=None, f_ten=None
   if f_nv:
     body = body[body['Tên NVBH'].astype(str).isin([str(x) for x in f_nv])]
   if f_ma:
-    body = body[body['Mã KH'].astype(str).isin([str(x) for x in f_ma])]
+    # nhập text: contains; list: isin
+    if isinstance(f_ma, str):
+      q = f_ma.strip()
+      if q:
+        body = body[body['Mã KH'].astype(str).str.contains(q, case=False, na=False)]
+    else:
+      body = body[body['Mã KH'].astype(str).isin([str(x) for x in f_ma])]
   if f_ten:
-    body = body[body['Tên KH'].astype(str).isin([str(x) for x in f_ten])]
+    if isinstance(f_ten, str):
+      q = f_ten.strip()
+      if q:
+        body = body[body['Tên KH'].astype(str).str.contains(q, case=False, na=False)]
+    else:
+      body = body[body['Tên KH'].astype(str).isin([str(x) for x in f_ten])]
   if f_l1 and 'L1' in body.columns:
-    fl = [str(x).strip().lower() for x in f_l1]
+    fl = [str(x).strip().lower() for x in (f_l1 if not isinstance(f_l1, str) else [f_l1])]
     body = body[body['L1'].astype(str).str.lower().apply(
         lambda v: any(x in v for x in fl) or v in fl
     )]
   if body.empty:
-    return body
+    return body.reset_index(drop=True)
   body = body.reset_index(drop=True)
   body['STT'] = range(1, len(body) + 1)
-  # rebuild total
-  if not tot.empty:
-    tr = tot.iloc[0].to_dict()
-    for c in ('Giá trị ĐH [Doanh Số]', 'LPPC', 'LPPC trừ Meat & Beer', 'Số lượng', 'Thành tiền'):
-      if c in body.columns:
-        try:
-          tr[c] = body[c].sum() if c in ('Số lượng', 'Thành tiền') else int(body[c].sum())
-        except Exception:
-          pass
-    tr['STT'] = ''
-    tr['Tên NVBH'] = 'TỔNG CỘNG'
-    body = pd.concat([body, pd.DataFrame([tr])], ignore_index=True)
+  # Dòng tổng theo đúng data đang lọc
+  tr = {c: '' for c in body.columns}
+  tr['STT'] = ''
+  tr['Tên NVBH'] = 'TỔNG CỘNG'
+  for c in ('Giá trị ĐH [Doanh Số]', 'LPPC', 'LPPC trừ Meat & Beer', 'Số lượng', 'Thành tiền'):
+    if c in body.columns:
+      try:
+        s = pd.to_numeric(body[c], errors='coerce').fillna(0).sum()
+        tr[c] = float(s) if c in ('Số lượng', 'Thành tiền') else int(round(s))
+      except Exception:
+        pass
+  body = pd.concat([body, pd.DataFrame([tr])], ignore_index=True)
   return body
 
 
@@ -6255,17 +6266,17 @@ def _render_detail_slicers_and_tables(df_src, report_date, filter_nv, key_prefix
     )
   with c3:
     st.markdown('<p class="filter-label">Mã KH</p>', unsafe_allow_html=True)
-    f_ma = st.multiselect(
-        'Mã KH', options=ma_opts, default=[],
+    f_ma = st.text_input(
+        'Mã KH', value='',
         key=f'{key_prefix}_ma', label_visibility='collapsed',
-        placeholder='Tất cả Mã KH',
+        placeholder='Nhập Mã KH để tìm...',
     )
   with c4:
     st.markdown('<p class="filter-label">Tên KH</p>', unsafe_allow_html=True)
-    f_ten = st.multiselect(
-        'Tên KH', options=ten_opts, default=[],
+    f_ten = st.text_input(
+        'Tên KH', value='',
         key=f'{key_prefix}_ten', label_visibility='collapsed',
-        placeholder='Tất cả Tên KH',
+        placeholder='Nhập Tên KH để tìm...',
     )
   f_l1 = []
   if show_l1_slicer:
@@ -6277,12 +6288,14 @@ def _render_detail_slicers_and_tables(df_src, report_date, filter_nv, key_prefix
           placeholder='Tất cả L1',
       )
 
+  _f_ma = (f_ma or '').strip() or None
+  _f_ten = (f_ten or '').strip() or None
   df_ord = _filter_turnover_detail_df(
-      df_ord_all, f_ngay or None, f_nv or None, f_ma or None, f_ten or None,
+      df_ord_all, f_ngay or None, f_nv or None, _f_ma, _f_ten,
       f_l1 or None if show_l1_slicer else None,
   )
   df_sp = _filter_turnover_detail_df(
-      df_sp_all, f_ngay or None, f_nv or None, f_ma or None, f_ten or None,
+      df_sp_all, f_ngay or None, f_nv or None, _f_ma, _f_ten,
       f_l1 or None if show_l1_slicer else None,
   )
 
@@ -6297,7 +6310,7 @@ def _render_detail_slicers_and_tables(df_src, report_date, filter_nv, key_prefix
           df_ord,
           title=f'📋 CHI TIẾT ĐƠN HÀNG{_suffix}',
           money_cols=['Giá trị ĐH [Doanh Số]'],
-          max_rows=25,
+          max_rows=15,
       ),
       unsafe_allow_html=True,
   )
@@ -6306,14 +6319,16 @@ def _render_detail_slicers_and_tables(df_src, report_date, filter_nv, key_prefix
           df_sp,
           title=f'📦 CHI TIẾT SẢN PHẨM THEO ĐƠN HÀNG{_suffix}',
           money_cols=['Thành tiền'],
-          max_rows=25,
+          max_rows=15,
       ),
       unsafe_allow_html=True,
   )
 
 
-def render_turnover_detail_html(df, title, money_cols=None, max_rows=25):
-  """Render bảng chi tiết TURNOVER — format sticky giống KPI / Trưng Bày."""
+def render_turnover_detail_html(df, title, money_cols=None, max_rows=15):
+  """Render bảng chi tiết — hiển thị full data, viewport ~15 dòng, cuộn xem hết.
+  Dòng TỔNG CỘNG luôn ở cuối toàn bộ data (theo bộ lọc).
+  """
   if df is None or df.empty:
     return f'<p style="color:#718096;font-size:13px;">Không có dữ liệu — {title}</p>'
   money_cols = money_cols or []
@@ -6326,19 +6341,19 @@ def render_turnover_detail_html(df, title, money_cols=None, max_rows=25):
       'border:1px solid #bce2f5 !important;padding:6px 5px;font-size:12px;'
       'text-align:center !important;white-space:nowrap;'
   )
-  # body without total for height limit
   is_tot = df['Tên NVBH'].astype(str).str.contains('TỔNG|TOTAL', case=False, na=False) if 'Tên NVBH' in df.columns else pd.Series(False, index=df.index)
   body = df[~is_tot]
   tot_df = df[is_tot]
-  show = body.head(max_rows)
   n_all = len(body)
+  # Chiều cao ~15 dòng (mỗi dòng ~32px) + header
+  max_h = 32 * int(max_rows) + 40
 
   html = [
       '<div class="trai-wrap" style="margin-top:14px;">',
       f'<h4 class="trai-title" style="color:#1a365d;font-weight:800;margin:8px 0 6px 0;">{title}</h4>',
-      f'<div style="font-size:11.5px;color:#4a5568;margin-bottom:4px;">Hiển thị {len(show):,} / {n_all:,} dòng'
-      + (' (cuộn dọc — tối đa 25 dòng)' if n_all > max_rows else '') + '</div>',
-      '<div class="trai-scroll" style="overflow:auto;max-height:420px;-webkit-overflow-scrolling:touch;">',
+      f'<div style="font-size:11.5px;color:#4a5568;margin-bottom:4px;">Tổng {n_all:,} dòng'
+      + (f' — hiển thị ~{max_rows} dòng, cuộn để xem tiếp' if n_all > max_rows else '') + '</div>',
+      f'<div class="trai-scroll" style="overflow:auto;max-height:{max_h}px;-webkit-overflow-scrolling:touch;">',
       '<table class="custom-kpi-table trai-table" style="border-collapse:collapse;width:100%;min-width:900px;">',
       '<thead><tr>',
   ]
@@ -6364,7 +6379,8 @@ def render_turnover_detail_html(df, title, money_cols=None, max_rows=25):
         return val
     return val
 
-  for pos, (_, row) in enumerate(show.iterrows()):
+  # Render FULL body (không cắt), cuộn trong max-height
+  for pos, (_, row) in enumerate(body.iterrows()):
     bg = '#e6f4fc' if pos % 2 == 0 else '#ffffff'
     html.append('<tr>')
     for c in cols:
@@ -6380,7 +6396,7 @@ def render_turnover_detail_html(df, title, money_cols=None, max_rows=25):
       )
     html.append('</tr>')
 
-  # total row
+  # Tổng cộng — luôn dòng cuối cùng của toàn bộ data đã lọc
   if not tot_df.empty:
     row = tot_df.iloc[0]
     html.append('<tr class="row-total">')
