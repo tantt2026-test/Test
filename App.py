@@ -5260,7 +5260,7 @@ def build_weekly_trend_comments(df, title, pct_prefix='% COV'):
   """Nhận xét tăng/giảm theo % từng tháng cho bảng Weekly multi-month.
 
   - So sánh Tháng T với T-1, T-2, T-3 (nếu có)
-  - Xu hướng 3 tháng gần nhất
+  - Xu hướng 3 tháng gần nhất: chốt tại T-1 (không lấy Tháng T)
   """
   if df is None or df.empty:
     return ''
@@ -5340,7 +5340,10 @@ def build_weekly_trend_comments(df, title, pct_prefix='% COV'):
       elif pt < pp - 0.3:
         down_vs[lab].append((short, pt - pp))
 
-    last3 = month_labs[-3:] if len(month_labs) >= 3 else month_labs
+    # Xu hướng 3 tháng gần nhất: lấy đến T-1 (không lấy Tháng T)
+    # vd months=[..., T-3, T-2, T-1, T] → last3 = [T-3, T-2, T-1]
+    base_labs = month_labs[:-1]  # loại Tháng T
+    last3 = base_labs[-3:] if len(base_labs) >= 3 else base_labs
     vals = [v for v in (_pct(r, lab) for lab in last3) if v is not None]
     if len(vals) >= 2:
       if vals[-1] > vals[0] + 0.5:
@@ -5362,10 +5365,14 @@ def build_weekly_trend_comments(df, title, pct_prefix='% COV'):
         f'<span style="color:#228b22;font-weight:700;">Tăng:</span> {up_s} · '
         f'<span style="color:#c53030;font-weight:700;">Giảm:</span> {down_s}</li>'
     )
+  # Nhãn 3 tháng (đến T-1)
+  base_labs_all = month_labs[:-1]
+  last3_labs = base_labs_all[-3:] if len(base_labs_all) >= 3 else base_labs_all
+  last3_label = ' → '.join(last3_labs) if last3_labs else '—'
   tu = ', '.join(f'{n} ({a:.1f}→{b:.1f})' for n, a, b in sorted(trend_up, key=lambda x: -(x[2]-x[1]))[:5]) or '—'
   td_ = ', '.join(f'{n} ({a:.1f}→{b:.1f})' for n, a, b in sorted(trend_down, key=lambda x: (x[2]-x[1]))[:5]) or '—'
   lines.append(
-      f'<li><b>Xu hướng 3 tháng gần nhất:</b> '
+      f'<li><b>Xu hướng 3 tháng gần nhất</b> <span style="color:#4a5568;">({last3_label}, chốt T-1)</span>: '
       f'<span style="color:#228b22;font-weight:700;">Cải thiện:</span> {tu} · '
       f'<span style="color:#c53030;font-weight:700;">Sụt giảm:</span> {td_}</li>'
   )
