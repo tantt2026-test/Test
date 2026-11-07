@@ -4670,6 +4670,9 @@ def _mcp_vip_outlet_map(mcp_df):
       if not mask.any():
         mask = mcp['_vip'].str.contains(g, case=False, na=False) & ~mcp['_vip'].str.contains('VIPSI', case=False, na=False)
     out[g] = set(x for x in mcp.loc[mask, '_ma'].tolist() if x)
+  # LẺ = CH OFF không thuộc VIP3 / VIP5 / VIPSI
+  vip_all = out['VIP3'] | out['VIP5'] | out['VIPSI']
+  out['LẺ'] = set(x for x in mcp['_ma'].tolist() if x and x not in vip_all)
   return out
 
 
@@ -4913,13 +4916,14 @@ def build_weekly_lppc_vip(mcp_df, sales_hist, df_rpt=None, filter_nv=None, month
 
 
 def build_cov_mcp_off_vip(mcp_df, df_rpt, report_date, filter_nv=None, sales_hist=None):
-  """COV MCP OFF theo nhóm VIP3 / VIP5 / VIPSI — Tháng T (tháng BC).
+  """COV MCP OFF theo nhóm VIP3 / VIP5 / VIPSI / LẺ — Tháng T (tháng BC).
 
-  MCP: số CH OFF thuộc nhóm VIP trên Data_MCP (theo NV).
-  ASO: số CH unique có đơn trong tháng T (RPT), thuộc nhóm VIP đó.
+  MCP: số CH OFF thuộc nhóm trên Data_MCP (theo NV).
+  ASO: số CH unique có đơn trong tháng T (RPT), thuộc nhóm đó.
   % COV = ASO / MCP * 100.
+  LẺ = CH OFF không thuộc VIP3/VIP5/VIPSI.
   """
-  groups = ('VIP3', 'VIP5', 'VIPSI')
+  groups = ('VIP3', 'VIP5', 'VIPSI', 'LẺ')
   cols = ['STT', 'Tên NVBH']
   for g in groups:
     cols += [f'MCP {g}', f'ASO {g}', f'% COV {g}']
@@ -5037,9 +5041,10 @@ def build_cov_mcp_off_vip(mcp_df, df_rpt, report_date, filter_nv=None, sales_his
   return out[keep]
 
 
-def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng T)', timegone_pct=None):
-  """Format bảng COV VIP giống các bảng KPI / Weekly.
-  % COV tô màu theo Timegone (Tháng T) — rule chung: < moc đỏ, moc→moc+5 xanh, >moc+5 tím.
+def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI / LẺ (Tháng T)', timegone_pct=None):
+  """Format bảng COV VIP/LẺ giống các bảng KPI / Weekly.
+  % COV rule riêng:
+    <50% đỏ | 50–<75% cam | 75–<90% vàng | 90–100% xanh.
   """
   if df is None or df.empty:
     return f'<p style="color:#718096;">Không có dữ liệu — {title}</p>'
@@ -5091,10 +5096,37 @@ def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng T
       cls = 'row-total-cell' if is_tot else ''
       if is_pct:
         try:
-          style_extra = color_pct_bg(val, moc=_moc)
-          cls = (color_pct_class(val, moc=_moc) + (' row-total-cell' if is_tot else '')).strip()
-          # % đã tô màu → không dùng nền xanh đậm dòng tổng cho ô này
+          try:
+            v_pct = float(str(val).replace('%', '').replace(',', '.').strip() or 0)
+          except Exception:
+            v_pct = 0.0
+          # Rule COV VIP/LẺ: <50 đỏ | 50-<75 cam | 75-<90 vàng | >=90 xanh
+          if v_pct < 50:
+            style_extra = (
+                'background-color:#fed7d7 !important;color:#742a2a !important;'
+                'font-weight:700 !important;'
+            )
+            cls = 'pct-red'
+          elif v_pct < 75:
+            style_extra = (
+                'background-color:#feebc8 !important;color:#7b341e !important;'
+                'font-weight:700 !important;'
+            )
+            cls = 'pct-orange'
+          elif v_pct < 90:
+            style_extra = (
+                'background-color:#fefcbf !important;color:#744210 !important;'
+                'font-weight:700 !important;'
+            )
+            cls = 'pct-yellow'
+          else:
+            style_extra = (
+                'background-color:#c6f6d5 !important;color:#22543d !important;'
+                'font-weight:700 !important;'
+            )
+            cls = 'pct-green'
           if is_tot:
+            cls = (cls + ' row-total-cell').strip()
             bg_cell = ''
             fg_cell = ''
           else:
@@ -5134,7 +5166,7 @@ def build_cov_vip_comments(df, title='COV MCP OFF VIP', timegone_pct=None):
   if body.empty:
     return ''
 
-  groups = [g for g in ('VIP3', 'VIP5', 'VIPSI') if f'% COV {g}' in df.columns]
+  groups = [g for g in ('VIP3', 'VIP5', 'VIPSI', 'LẺ') if f'% COV {g}' in df.columns]
 
   def _pct(row, g):
     try:
@@ -5150,7 +5182,7 @@ def build_cov_vip_comments(df, title='COV MCP OFF VIP', timegone_pct=None):
   lines.append(f'<div style="font-weight:800;color:#034ea2;margin-bottom:6px;">📊 NHẬN XÉT — {title}</div>')
   lines.append(
       f'<div style="font-size:12.5px;color:#2d3748;margin-bottom:4px;">'
-      f'Mốc Timegone = <b>{tg:.1f}%</b> | % COV = ASO/MCP theo từng nhóm VIP</div>'
+      f'Rule %: &lt;50% đỏ · 50–&lt;75% cam · 75–&lt;90% vàng · ≥90% xanh | % COV = ASO/MCP</div>'
   )
   lines.append('<ul style="margin:0;padding-left:18px;line-height:1.55;font-size:13px;">')
 
@@ -5162,8 +5194,11 @@ def build_cov_vip_comments(df, title='COV MCP OFF VIP', timegone_pct=None):
       p = _pct(tr, g)
       mc = tr.get(f'MCP {g}', 0)
       aso = tr.get(f'ASO {g}', 0)
-      flag = '🟢 kịp' if p >= tg else '🔴 chậm'
-      parts.append(f'{g}: {aso}/{mc} ({p:.1f}% — {flag})')
+      if p < 50: flag = '🔴'
+      elif p < 75: flag = '🟠'
+      elif p < 90: flag = '🟡'
+      else: flag = '🟢'
+      parts.append(f'{g}: {aso}/{mc} ({p:.1f}% {flag})')
     lines.append(f'<li><b>Team:</b> {" · ".join(parts)}</li>')
 
   for g in groups:
@@ -5179,9 +5214,9 @@ def build_cov_vip_comments(df, title='COV MCP OFF VIP', timegone_pct=None):
     ranked_dn = sorted(ranked, key=lambda x: x[1])
     top = ', '.join(f'{n} ({p:.1f}%)' for n, p, _, _ in ranked_up[:3])
     bot = ', '.join(f'{n} ({p:.1f}%)' for n, p, _, _ in ranked_dn[:3])
-    n_ok = sum(1 for _, p, _, _ in ranked if p >= tg)
+    n_ok = sum(1 for _, p, _, _ in ranked if p >= 90)
     lines.append(
-        f'<li><b>{g}:</b> {n_ok}/{len(ranked)} NV ≥ Timegone · '
+        f'<li><b>{g}:</b> {n_ok}/{len(ranked)} NV ≥ 90% · '
         f'<span style="color:#228b22;font-weight:700;">Top:</span> {top} · '
         f'<span style="color:#c53030;font-weight:700;">Bottom:</span> {bot}</li>'
     )
@@ -9709,7 +9744,7 @@ def mbs_t11_eval(df_outlet, member_type, actual, target, col_brand='_brand', col
   return mission, ds4, muc, rate, round(actual * rate / 100)
 
 
-def render_mbs_pie_chart(df_show, title='Tỷ lệ KH theo Nhóm'):
+def render_mbs_pie_chart(df_show, title='Tỷ lệ KH theo Nhóm', height=380):
   """Biểu đồ tròn tỷ lệ từng nhóm / tổng KH đang hiển thị."""
   try:
     import plotly.graph_objects as go
@@ -9759,7 +9794,7 @@ def render_mbs_pie_chart(df_show, title='Tỷ lệ KH theo Nhóm'):
             x=0.5, xanchor='center',
         ),
         margin=dict(l=20, r=20, t=50, b=20),
-        height=380,
+        height=height,
         showlegend=True,
         legend=dict(orientation='h', y=-0.05, x=0.5, xanchor='center', font=dict(size=11)),
         paper_bgcolor='white',
@@ -19348,20 +19383,25 @@ if _nav == '📊 BÁO CÁO KPI':
               )
         except Exception as _e_mbs_nv:
           st.warning(f'Không dựng được bảng tổng hợp NV {_bn}: {_e_mbs_nv}')
-        # Chart: Hội Viên Tết tách 2 nhóm BRAND_VIP / BRAND_VIPDAISU
+        # Chart: Hội Viên Tết tách 2 nhóm — 2 chart nằm cùng 1 dòng
         if 'Mức đạt' in df_detail.columns and 'Member type' in df_show.columns:
-          for _mem, _lab in (
-              ('BRAND_VIP', 'BRAND_VIP'),
-              ('BRAND_VIPDAISU', 'BRAND_VIP Đại sứ'),
+          _c1, _c2 = st.columns(2)
+          for _col, (_mem, _lab) in zip(
+              (_c1, _c2),
+              (
+                  ('BRAND_VIP', 'BRAND_VIP'),
+                  ('BRAND_VIPDAISU', 'BRAND_VIP Đại sứ'),
+              ),
           ):
             _mf = str(_mem).upper().replace(' ', '')
             _sub = df_show[
                 df_show['Member type'].astype(str).str.upper().str.replace(' ', '', regex=False).str.contains(_mf, na=False)
             ]
-            if _sub is None or _sub.empty:
-              st.info(f'Không có dữ liệu chart — {_lab}.')
-              continue
-            render_mbs_pie_chart(_sub, title=f'Tỷ lệ KH theo Nhóm — {_lab}')
+            with _col:
+              if _sub is None or _sub.empty:
+                st.info(f'Không có dữ liệu chart — {_lab}.')
+              else:
+                render_mbs_pie_chart(_sub, title=f'Tỷ lệ KH theo Nhóm — {_lab}', height=320)
         else:
           render_mbs_pie_chart(df_show, title=f'Tỷ lệ KH theo Nhóm — {_bn}')
         st.download_button(
@@ -20941,7 +20981,7 @@ if _nav == '📊 BÁO CÁO KPI':
         st.markdown(
             render_cov_vip_html(
                 df_cov_vip,
-                title=f'COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng {report_date.strftime("%m/%Y")})',
+                title=f'COV MCP OFF — VIP3 / VIP5 / VIPSI / LẺ (Tháng {report_date.strftime("%m/%Y")})',
                 timegone_pct=_CURRENT_TIMEGONE,
             ),
             unsafe_allow_html=True,
@@ -21274,7 +21314,7 @@ if _nav == '📊 BÁO CÁO KPI':
           st.markdown(
               render_cov_vip_html(
                   df_cov_vip_aso,
-                  title=f'COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng {report_date.strftime("%m/%Y")})',
+                  title=f'COV MCP OFF — VIP3 / VIP5 / VIPSI / LẺ (Tháng {report_date.strftime("%m/%Y")})',
                   timegone_pct=_CURRENT_TIMEGONE,
               ),
               unsafe_allow_html=True,
