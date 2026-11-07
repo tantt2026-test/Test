@@ -6058,10 +6058,12 @@ def build_turnover_order_detail(df, report_date, filter_nv=None, l1_filter=None,
 
 
 def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=None, date_list=None):
-  """Bảng 2: Chi tiết từng SP. date_list=None → đầu tháng→report_date."""
+  """Bảng 2: Chi tiết từng SP. date_list=None → đầu tháng→report_date.
+  Số lượng: lấy Tổng chẵn (Thùng) + Tổng lẻ (Lẻ) từ file bán hàng.
+  """
   cols = [
       'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'L1', 'Mã ĐH',
-      'Mã SP', 'Tên sản phẩm', 'Số lượng', 'Thành tiền', 'Ngày ĐH', 'Sub Division',
+      'Mã SP', 'Tên sản phẩm', 'SL Thùng', 'SL Lẻ', 'Thành tiền', 'Ngày ĐH',
   ]
   empty = pd.DataFrame(columns=cols)
   if df is None or getattr(df, 'empty', True) or 'date' not in df.columns:
@@ -6095,10 +6097,12 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
     return empty
 
   val_col = find_col(d, ['Thành tiền trước CK', 'Thành tiền trước chiết khấu', 'Tổng tiền'])
-  qty_col = find_col(d, ['Số lượng', 'SL', 'Qty', 'Quantity'])
+  # Thùng = chẵn; Lẻ = lẻ — khớp rule MOQ trong file bán hàng
+  col_thung = find_col(d, ['Tổng chẵn', 'SL Chẵn', 'SL chẵn', 'Số lượng thùng', 'SL Thùng', 'Thùng'])
+  col_le = find_col(d, ['Tổng lẻ', 'SL lẻ', 'SL Lẻ', 'Số lượng lẻ', 'SL Lẻ', 'Lẻ'])
+  qty_col = find_col(d, ['Số lượng', 'SL', 'Qty', 'Quantity'])  # fallback
   sp_col = find_col(d, ['Mã sản phẩm', 'Mã SP', 'SKU', 'Product code'])
   name_col = find_col(d, ['Tên sản phẩm', 'Tên SP', 'Product name'])
-  sub_col = find_col(d, ['Sub Division', 'SubDivision', 'Ngành hàng'])
   ten_kh_col = find_col(d, ['Tên CH', 'Tên khách hàng', 'Tên Cửa hàng', 'Outlet name'])
   order_col = 'Mã đơn hàng' if 'Mã đơn hàng' in d.columns else None
 
@@ -6106,7 +6110,11 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
       lambda x: str(x).strip()[:-2] if str(x).endswith('.0') else str(x).strip()
   ) if 'Mã CH' in d.columns else ''
   d['_sales'] = pd.to_numeric(d[val_col], errors='coerce').fillna(0) if val_col else 0.0
-  d['_qty'] = pd.to_numeric(d[qty_col], errors='coerce').fillna(0) if qty_col else 0.0
+  d['_thung'] = pd.to_numeric(d[col_thung], errors='coerce').fillna(0) if col_thung else 0.0
+  d['_le'] = pd.to_numeric(d[col_le], errors='coerce').fillna(0) if col_le else 0.0
+  # fallback: nếu không có cột thùng/lẻ thì đổ vào SL Lẻ
+  if not col_thung and not col_le and qty_col:
+    d['_le'] = pd.to_numeric(d[qty_col], errors='coerce').fillna(0)
 
   rows = []
   for idx, r in d.iterrows():
@@ -6114,7 +6122,8 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
       ngay = pd.to_datetime(r.get('Ngày tạo đơn hàng'), dayfirst=True, errors='coerce')
       ngay_s = ngay.strftime('%d/%m/%Y %H:%M') if pd.notna(ngay) else rd.strftime('%d/%m/%Y')
     else:
-      ngay_s = rd.strftime('%d/%m/%Y')
+      _gd = r.get('date', rd)
+      ngay_s = _gd.strftime('%d/%m/%Y') if hasattr(_gd, 'strftime') else str(_gd)
     rows.append({
         'STT': 0,
         'Tên NVBH': str(r.get('Tên NVBH', '')).strip(),
@@ -6124,10 +6133,10 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
         'Mã ĐH': str(r.get(order_col, '')).strip() if order_col else '',
         'Mã SP': str(r.get(sp_col, '')).strip() if sp_col else '',
         'Tên sản phẩm': str(r.get(name_col, '')).strip() if name_col else '',
-        'Số lượng': float(r.get('_qty', 0) or 0),
+        'SL Thùng': float(r.get('_thung', 0) or 0),
+        'SL Lẻ': float(r.get('_le', 0) or 0),
         'Thành tiền': float(r.get('_sales', 0) or 0),
         'Ngày ĐH': ngay_s,
-        'Sub Division': str(r.get(sub_col, '')).strip() if sub_col else '',
     })
   if not rows:
     return empty
@@ -6143,10 +6152,10 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
       'Mã ĐH': '',
       'Mã SP': '',
       'Tên sản phẩm': '',
-      'Số lượng': float(out['Số lượng'].sum()),
+      'SL Thùng': float(out['SL Thùng'].sum()),
+      'SL Lẻ': float(out['SL Lẻ'].sum()),
       'Thành tiền': float(out['Thành tiền'].sum()),
       'Ngày ĐH': '',
-      'Sub Division': '',
   }
   out = pd.concat([out, pd.DataFrame([tot])], ignore_index=True)
   return out
@@ -6198,11 +6207,12 @@ def _filter_turnover_detail_df(df, f_ngay=None, f_nv=None, f_ma=None, f_ten=None
   tr = {c: '' for c in body.columns}
   tr['STT'] = ''
   tr['Tên NVBH'] = 'TỔNG CỘNG'
-  for c in ('Giá trị ĐH [Doanh Số]', 'LPPC', 'LPPC trừ Meat & Beer', 'Số lượng', 'Thành tiền'):
+  for c in ('Giá trị ĐH [Doanh Số]', 'LPPC', 'LPPC trừ Meat & Beer',
+            'Số lượng', 'SL Thùng', 'SL Lẻ', 'Thành tiền'):
     if c in body.columns:
       try:
         s = pd.to_numeric(body[c], errors='coerce').fillna(0).sum()
-        tr[c] = float(s) if c in ('Số lượng', 'Thành tiền') else int(round(s))
+        tr[c] = float(s) if c in ('Số lượng', 'SL Thùng', 'SL Lẻ', 'Thành tiền') else int(round(s))
       except Exception:
         pass
   body = pd.concat([body, pd.DataFrame([tr])], ignore_index=True)
@@ -6359,8 +6369,10 @@ def render_turnover_detail_html(df, title, money_cols=None, max_rows=15):
   ]
   for c in cols:
     sticky = ''
-    if c in ('STT', 'Tên NVBH'):
-      sticky = 'position:sticky;left:0;z-index:3;' if c == 'STT' else 'position:sticky;left:40px;z-index:3;'
+    if c == 'STT':
+      sticky = 'position:sticky;left:0;z-index:3;border-right:1px solid #90cdf4 !important;'
+    elif c == 'Tên NVBH':
+      sticky = 'position:sticky;left:40px;z-index:3;border-right:2px solid #63b3ed !important;'
     html.append(f'<th style="{th}{sticky}">{c}</th>')
   html.append('</tr></thead><tbody>')
 
@@ -6372,9 +6384,10 @@ def render_turnover_detail_html(df, title, money_cols=None, max_rows=15):
         return f'{float(val):,.0f}'.replace(',', '.')
       except Exception:
         return val
-    if c in ('Số lượng',) and isinstance(val, (int, float)):
+    if c in ('Số lượng', 'SL Thùng', 'SL Lẻ') and isinstance(val, (int, float)):
       try:
-        return f'{float(val):,.1f}'.replace(',', '.')
+        v = float(val)
+        return f'{v:,.0f}'.replace(',', '.') if v == int(v) else f'{v:,.1f}'.replace(',', '.')
       except Exception:
         return val
     return val
@@ -6385,12 +6398,19 @@ def render_turnover_detail_html(df, title, money_cols=None, max_rows=15):
     html.append('<tr>')
     for c in cols:
       val = _fmt(c, row.get(c, ''))
-      al = 'left' if c in ('Tên NVBH', 'Tên KH', 'Tên sản phẩm', 'Sub Division') else 'center'
+      al = 'left' if c in ('Tên NVBH', 'Tên KH', 'Tên sản phẩm') else 'center'
       sticky = ''
+      # Sticky + đường kẻ phân cột rõ (border-right đậm hơn)
       if c == 'STT':
-        sticky = f'position:sticky;left:0;z-index:1;background-color:{bg} !important;'
+        sticky = (
+            f'position:sticky;left:0;z-index:1;background-color:{bg} !important;'
+            f'border-right:1px solid #90cdf4 !important;'
+        )
       elif c == 'Tên NVBH':
-        sticky = f'position:sticky;left:40px;z-index:1;background-color:{bg} !important;'
+        sticky = (
+            f'position:sticky;left:40px;z-index:1;background-color:{bg} !important;'
+            f'border-right:2px solid #63b3ed !important;box-shadow:2px 0 0 #63b3ed;'
+        )
       html.append(
           f'<td style="{td_base}background-color:{bg} !important;text-align:{al} !important;{sticky}">{val}</td>'
       )
@@ -9897,6 +9917,14 @@ def build_performance_report(
     l1 = str(ch_l1.get(_norm_code(ma), '')).lower()
     return ('on' in l1) and ('off' not in l1)
 
+  def _is_mcp_off(ma):
+    """True chỉ khi CH có trên Data_MCP và L1 = OFF (đủ điều kiện tính Trái Tuyến)."""
+    ma = _norm_code(ma)
+    if not ma or ma not in ch_l1:
+      return False
+    l1 = str(ch_l1.get(ma, '')).lower()
+    return ('off' in l1) or (l1 and 'on' not in l1)
+
   def _is_vip(ma, nhom=''):
     """VIP3 / VIP5 / VIPSI — map MCP + Tên Nhóm CH trên lịch VT."""
     v = ch_vip.get(_norm_code(ma), '')
@@ -10149,14 +10177,18 @@ def build_performance_report(
 
         if co_dh:
           # Trái tuyến: không nằm lịch VT ngày BC, hoặc cờ YES
+          # Chỉ tính khi CH có trên Data_MCP và L1 = Kênh OFF
           # Ngoại lệ: CH trong DSKH F4/F2 đúng lịch VT bổ sung → KHÔNG tính trái tuyến
           if (not on_plan) or is_trai_flag:
             if check_dskh_bo_sung(ma, rd, _perf_dskh_rules):
               (pc_on if is_on else pc_off).add(ma)  # coi như đúng tuyến bổ sung
-              if not is_on:
+              if _is_mcp_off(ma):
                 bo_sung.add(ma)
             else:
-              (trai_on if is_on else trai_off).add(ma)
+              # Chỉ OFF + có trên MCP mới tính Trái Tuyến
+              if _is_mcp_off(ma):
+                trai_off.add(ma)
+              # Kênh ON / không có MCP → bỏ qua (không tính trái tuyến)
           else:
             # PC đúng tuyến: có ĐH + nằm trong lịch VT ngày BC
             (pc_on if is_on else pc_off).add(ma)
@@ -10166,17 +10198,18 @@ def build_performance_report(
             vip_ko.add(ma)
 
       # Bổ sung từ RPT: CH có đơn ngày BC nhưng không có trên lịch VT ngày BC
+      # Chỉ tính Trái Tuyến nếu CH có trên MCP và L1 = OFF
       if not d_nv.empty:
         for ma in d_nv['_ma'].unique():
           if not ma:
             continue
           if ma not in plan_set_all:
             if check_dskh_bo_sung(ma, rd, _perf_dskh_rules):
-              if not _is_on(ma):
+              if _is_mcp_off(ma):
                 bo_sung.add(ma)
               continue  # ngoại lệ DSKH bổ sung
-            is_on = _is_on(ma)
-            (trai_on if is_on else trai_off).add(ma)
+            if _is_mcp_off(ma):
+              trai_off.add(ma)
 
     pct_off = round(len(pc_off) / len(da_off) * 100, 1) if da_off else 0.0
     pct_on = round(len(pc_on) / len(da_on) * 100, 1) if da_on else 0.0
@@ -10437,7 +10470,7 @@ def build_performance_report(
     _delta_lppc = float(lppc_off) - float(lppc_off_mid)
     _delta_pct_off = float(pct_off) - float(pct_off_mid)
     _delta_pct_on = float(pct_on) - float(pct_on_mid)
-    _n_trai = len(trai_off) + len(trai_on)
+    _n_trai = len(trai_off)  # chỉ Kênh OFF + có trên MCP
     _n_vip_ko = len(vip_ko)
     _pct_vt_dh = (
         round(len(pc_off | pc_on) / max(len(da_off | da_on), 1) * 100, 1)
@@ -11203,8 +11236,9 @@ def build_trai_tuyen_orders(df_rpt, df_visit, df_mcp, report_date, filter_nv=Non
   Rule:
   1. Lấy CH có Đơn Hàng theo Ngày VT thực tế = ngày BC (file lịch).
   2. Đối chiếu: CH đó có nằm trong lịch VT (Ngày lịch VT = ngày BC) hay không.
-  3. Không nằm lịch VT ngày BC → ĐH Trái Tuyến.
-  4. Map RPT_061 lấy Mã ĐH, Doanh số, LPPC.
+  3. Không nằm lịch VT ngày BC → ứng viên Trái Tuyến.
+  4. Chỉ giữ CH có trên Data_MCP và L1 = Kênh OFF (CH không có MCP / Kênh ON → bỏ).
+  5. Map RPT lấy Mã ĐH, Doanh số, LPPC.
   """
   empty = pd.DataFrame(columns=[
       'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'Mã ĐH',
@@ -11302,10 +11336,13 @@ def build_trai_tuyen_orders(df_rpt, df_visit, df_mcp, report_date, filter_nv=Non
     # lọc theo NV sau
     pass
 
-  # Chỉ tính L1 Kênh OFF (bỏ CH Kênh ON theo Data_MCP)
+  # Chỉ tính Trái Tuyến khi: CH có trên Data_MCP VÀ L1 = Kênh OFF
   _ch_l1 = build_mcp_channel_map(df_mcp)
-  _ch_l1 = {(str(k)[:-2] if str(k).endswith('.0') else str(k)): v for k, v in _ch_l1.items()}
-  trai_ma = {m for m in trai_ma if _ch_l1.get(m) != 'ON'}
+  _ch_l1 = {
+      (str(k)[:-2] if str(k).endswith('.0') else str(k).strip()): v
+      for k, v in _ch_l1.items()
+  }
+  trai_ma = {m for m in trai_ma if _ch_l1.get(m) == 'OFF'}
 
   if not trai_ma:
     return empty
