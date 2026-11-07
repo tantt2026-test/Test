@@ -19348,7 +19348,22 @@ if _nav == '📊 BÁO CÁO KPI':
               )
         except Exception as _e_mbs_nv:
           st.warning(f'Không dựng được bảng tổng hợp NV {_bn}: {_e_mbs_nv}')
-        render_mbs_pie_chart(df_show, title=f'Tỷ lệ KH theo Nhóm — {_bn}')
+        # Chart: Hội Viên Tết tách 2 nhóm BRAND_VIP / BRAND_VIPDAISU
+        if 'Mức đạt' in df_detail.columns and 'Member type' in df_show.columns:
+          for _mem, _lab in (
+              ('BRAND_VIP', 'BRAND_VIP'),
+              ('BRAND_VIPDAISU', 'BRAND_VIP Đại sứ'),
+          ):
+            _mf = str(_mem).upper().replace(' ', '')
+            _sub = df_show[
+                df_show['Member type'].astype(str).str.upper().str.replace(' ', '', regex=False).str.contains(_mf, na=False)
+            ]
+            if _sub is None or _sub.empty:
+              st.info(f'Không có dữ liệu chart — {_lab}.')
+              continue
+            render_mbs_pie_chart(_sub, title=f'Tỷ lệ KH theo Nhóm — {_lab}')
+        else:
+          render_mbs_pie_chart(df_show, title=f'Tỷ lệ KH theo Nhóm — {_bn}')
         st.download_button(
             label=f'⬇️ Xuất file CSV - Chi tiết {_bn}',
             data=df_html.to_csv(index=False).encode('utf-8-sig'),
