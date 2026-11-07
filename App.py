@@ -229,6 +229,43 @@ st.markdown(
         background-color: #c6f6d5 !important;
         color: #22543d !important;
     }
+    .custom-kpi-table td.pct-yellow {
+        background-color: #fefcbf !important;
+        color: #744210 !important;
+        font-weight: 800 !important;
+    }
+    .custom-kpi-table tbody tr td.pct-yellow,
+    .custom-kpi-table tbody tr.row-total td.pct-yellow {
+        background-color: #fefcbf !important;
+        color: #744210 !important;
+    }
+    /* COV VIP/LẺ: class màu thắng cả row-total-cell */
+    .custom-kpi-table tbody tr.row-total td.pct-red.row-total-cell,
+    .custom-kpi-table tbody tr.row-total td.pct-orange.row-total-cell,
+    .custom-kpi-table tbody tr.row-total td.pct-yellow.row-total-cell,
+    .custom-kpi-table tbody tr.row-total td.pct-green.row-total-cell {
+        /* giữ màu theo band, không dùng nền xanh đậm total */
+    }
+    .custom-kpi-table tbody tr.row-total td.pct-red,
+    .custom-kpi-table tbody tr.row-total td.pct-red.row-total-cell {
+        background-color: #fed7d7 !important;
+        color: #742a2a !important;
+    }
+    .custom-kpi-table tbody tr.row-total td.pct-orange,
+    .custom-kpi-table tbody tr.row-total td.pct-orange.row-total-cell {
+        background-color: #feebc8 !important;
+        color: #c05621 !important;
+    }
+    .custom-kpi-table tbody tr.row-total td.pct-yellow,
+    .custom-kpi-table tbody tr.row-total td.pct-yellow.row-total-cell {
+        background-color: #fefcbf !important;
+        color: #744210 !important;
+    }
+    .custom-kpi-table tbody tr.row-total td.pct-green,
+    .custom-kpi-table tbody tr.row-total td.pct-green.row-total-cell {
+        background-color: #c6f6d5 !important;
+        color: #22543d !important;
+    }
     .custom-kpi-table td.pct-purple {
         background-color: #e9d8fd !important;
         color: #553c9a !important;
@@ -5102,39 +5139,33 @@ def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI / LẺ (T
             v_pct = 0.0
           # Rule COV VIP/LẺ: <50 đỏ | 50-<75 cam | 75-<90 vàng | >=90 xanh
           if v_pct < 50:
+            cls = 'pct-red'
             style_extra = (
                 'background-color:#fed7d7 !important;color:#742a2a !important;'
-                'font-weight:700 !important;'
+                'font-weight:800 !important;'
             )
-            cls = 'pct-red'
           elif v_pct < 75:
-            style_extra = (
-                'background-color:#feebc8 !important;color:#7b341e !important;'
-                'font-weight:700 !important;'
-            )
             cls = 'pct-orange'
+            style_extra = (
+                'background-color:#feebc8 !important;color:#c05621 !important;'
+                'font-weight:800 !important;'
+            )
           elif v_pct < 90:
+            cls = 'pct-yellow'
             style_extra = (
                 'background-color:#fefcbf !important;color:#744210 !important;'
-                'font-weight:700 !important;'
+                'font-weight:800 !important;'
             )
-            cls = 'pct-yellow'
           else:
+            cls = 'pct-green'
             style_extra = (
                 'background-color:#c6f6d5 !important;color:#22543d !important;'
-                'font-weight:700 !important;'
+                'font-weight:800 !important;'
             )
-            cls = 'pct-green'
-          if is_tot:
-            cls = (cls + ' row-total-cell').strip()
-            bg_cell = ''
-            fg_cell = ''
-          else:
-            bg_cell = f'background-color:{bg} !important;'
-            fg_cell = f'color:{fg} !important;'
+          # Không gắn nền zebra/total vào ô % — để class màu hiển thị đúng
           html.append(
-              f'<td data-colored="1" class="{cls}" style="{td}{bg_cell}{fg_cell}'
-              f'font-weight:{"900" if is_tot else "700"};{sticky}{style_extra}">{val}</td>'
+              f'<td data-colored="1" class="{cls}" style="{td}{sticky}{style_extra}'
+              f'text-align:center !important;">{val}</td>'
           )
           continue
         except Exception:
