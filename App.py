@@ -6138,8 +6138,8 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
   Số lượng: lấy Tổng chẵn (Thùng) + Tổng lẻ (Lẻ) từ file bán hàng.
   """
   cols = [
-      'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'L1', 'Mã ĐH', 'KM',
-      'Mã SP', 'Tên sản phẩm', 'SL Thùng', 'SL Lẻ', 'Thành tiền', 'Ngày ĐH',
+      'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'L1', 'Mã ĐH',
+      'Mã SP', 'Tên sản phẩm', 'SL Thùng', 'SL Lẻ', 'Thành tiền', 'Ngày ĐH', 'KM',
   ]
   empty = pd.DataFrame(columns=cols)
   if df is None or getattr(df, 'empty', True) or 'date' not in df.columns:
@@ -6207,17 +6207,18 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
         'Tên KH': str(r.get(ten_kh_col, '')).strip() if ten_kh_col else '',
         'L1': str(r.get('L1', '')).strip() if 'L1' in d.columns else '',
         'Mã ĐH': str(r.get(order_col, '')).strip() if order_col else '',
-        'KM': '✓' if _get_km_flag(r) else '',
         'Mã SP': str(r.get(sp_col, '')).strip() if sp_col else '',
         'Tên sản phẩm': str(r.get(name_col, '')).strip() if name_col else '',
         'SL Thùng': float(r.get('_thung', 0) or 0),
         'SL Lẻ': float(r.get('_le', 0) or 0),
         'Thành tiền': float(r.get('_sales', 0) or 0),
         'Ngày ĐH': ngay_s,
+        'KM': '✓' if _get_km_flag(r) else '',
     })
   if not rows:
     return empty
   out = pd.DataFrame(rows)
+  out = out[[c for c in cols if c in out.columns]]
   out = out.sort_values(['Tên NVBH', 'Mã ĐH', 'Thành tiền'], ascending=[True, True, False]).reset_index(drop=True)
   out['STT'] = range(1, len(out) + 1)
   tot = {
@@ -6227,13 +6228,13 @@ def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=Non
       'Tên KH': '',
       'L1': '',
       'Mã ĐH': '',
-      'KM': '',
       'Mã SP': '',
       'Tên sản phẩm': '',
       'SL Thùng': float(out['SL Thùng'].sum()),
       'SL Lẻ': float(out['SL Lẻ'].sum()),
       'Thành tiền': float(out['Thành tiền'].sum()),
       'Ngày ĐH': '',
+      'KM': '',
   }
   out = pd.concat([out, pd.DataFrame([tot])], ignore_index=True)
   return out
@@ -6609,12 +6610,12 @@ def build_turnover_report(df, report_date, turnover_targets, filter_nv=None):
   total_pct = round(total_mtd / team_tgt * 100, 1) if team_tgt else 0.0
 
   total_row = pd.DataFrame([{
-      'STT': '-',
+      'STT': '',
       'Mã NVBH': 'TỔNG CỘNG',
       'Tên NVBH': (
           f'SS {_ss_name()} Total'
           if not nv_selected(filter_nv)
-          else nv_label(filter_nv)
+          else f'TỔNG CỘNG ({nv_label(filter_nv)})'
       ),
       'Chỉ Tiêu Doanh Số': team_tgt,
       'Thực Hiện Ngày': total_today,
@@ -8961,14 +8962,18 @@ def render_html_table(df, freeze_cols=None):
       html.append(f'<th style="{th_base}">{col}</th>')
   html.append('</tr></thead><tbody>')
 
+  n_rows = len(df)
   for pos, (_, row) in enumerate(df.iterrows()):
+    _ten = str(row.get('Tên NVBH', row.get('Tên NV', row.get('Tên nhóm', '')))).upper()
+    _stt = str(row.get('STT', '')).strip()
     is_total = (
-        'TOTAL' in str(row.get('Tên NVBH', '')).upper()
-        or 'TỔNG' in str(row.get('Tên NVBH', '')).upper()
-        or 'TOTAL' in str(row.get('Tên NV', '')).upper()
-        or 'TỔNG' in str(row.get('Tên NV', '')).upper()
-        or 'TOTAL' in str(row.get('Tên nhóm', '')).upper()
-        or 'TỔNG' in str(row.get('Tên nhóm', '')).upper()
+        'TOTAL' in _ten
+        or 'TỔNG' in _ten
+        or _stt in ('-', '') and pos == n_rows - 1
+        or pos == n_rows - 1 and any(
+            'TỔNG' in str(row.get(c, '')).upper() or 'TOTAL' in str(row.get(c, '')).upper()
+            for c in row.index
+        )
     )
     if is_total:
       row_bg, row_fg = '#1a365d', '#ffffff'
@@ -8976,7 +8981,7 @@ def render_html_table(df, freeze_cols=None):
       row_bg = '#e6f4fc' if pos % 2 == 0 else '#ffffff'
       row_fg = '#1a202c'
 
-    html.append('<tr>')
+    html.append('<tr' + (' class="row-total"' if is_total else '') + '>')
     for col in cols:
       val = row[col]
       if pd.isna(val):
@@ -9024,12 +9029,13 @@ def render_html_table(df, freeze_cols=None):
             f'white-space:nowrap;">{val}</td>'
         )
       elif is_total and not is_sticky:
-        align = 'center' if ('%' in str(col) or col == 'STT') else 'right'
+        # Đồng bộ format dòng tổng: nền xanh đậm, chữ trắng, canh giữa
+        align = 'center'
         if is_pct_col or (isinstance(val, str) and '%' in str(val)):
           style_bg = color_pct_bg(val)
           cls = color_pct_class(val)
           html.append(
-              f'<td align="center" data-colored="1" class="{cls}" '
+              f'<td align="center" data-colored="1" class="{cls} row-total-cell" '
               f'style="{style_bg} font-weight:900 !important;'
               f'text-align:center !important;white-space:nowrap;">{val}</td>'
           )
@@ -9043,10 +9049,12 @@ def render_html_table(df, freeze_cols=None):
       elif is_sticky:
         align = 'center' if col == 'STT' else 'left'
         fw = '900' if is_total else '600'
+        _cls = ' class="row-total-cell"' if is_total else ''
         html.append(
-            f'<td style="{sticky}text-align:{align} !important;font-weight:{fw} !important;'
+            f'<td{_cls} style="{sticky}text-align:{align} !important;font-weight:{fw} !important;'
             f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
-            f'border:1px solid {"#2b6cb0" if is_total else "#bce2f5"} !important;">{val}</td>'
+            f'border:1px solid {"#2b6cb0" if is_total else "#bce2f5"} !important;'
+            f'background-color:{row_bg} !important;color:{row_fg} !important;">{val}</td>'
         )
       else:
         align = (
