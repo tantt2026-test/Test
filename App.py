@@ -5939,13 +5939,13 @@ def _is_meat_beer_line(row):
   return False
 
 
-def build_turnover_order_detail(df, report_date, filter_nv=None):
-  """Bảng 1 TURNOVER: Chi tiết từng ĐH theo ngày BC.
-  Cột: STT, Tên NVBH, Mã KH, Tên KH, Mã ĐH, Giá trị ĐH, Ngày ĐH,
-       LPPC (số line), LPPC trừ Meat & Beer.
+def build_turnover_order_detail(df, report_date, filter_nv=None, l1_filter=None, date_list=None):
+  """Bảng 1: Chi tiết từng ĐH.
+  - date_list: list[date] | None. None → từ đầu tháng → report_date (tất cả ngày).
+  - l1_filter: None | 'OFF' | 'ON'
   """
   cols = [
-      'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'Mã ĐH',
+      'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'L1', 'Mã ĐH',
       'Giá trị ĐH [Doanh Số]', 'Ngày ĐH', 'LPPC', 'LPPC trừ Meat & Beer',
   ]
   empty = pd.DataFrame(columns=cols)
@@ -5956,11 +5956,28 @@ def build_turnover_order_detail(df, report_date, filter_nv=None):
   except Exception:
     return empty
 
-  d = df[df['date'] == rd].copy()
+  d = df.copy()
+  if date_list is not None:
+    _ds = set(date_list)
+    d = d[d['date'].isin(_ds)]
+  else:
+    try:
+      _ms = date(rd.year, rd.month, 1)
+      d = d[(d['date'] >= _ms) & (d['date'] <= rd)]
+    except Exception:
+      d = d[d['date'] == rd]
   if d.empty:
     return empty
   if nv_selected(filter_nv):
     d = filter_df_by_nv(d, 'Tên NVBH', filter_nv)
+  if d.empty:
+    return empty
+  # Lọc L1
+  if l1_filter and 'L1' in d.columns:
+    _lf = str(l1_filter).strip().lower()
+    d = d[d['L1'].astype(str).str.lower().str.contains(
+        'off' if _lf == 'off' else 'on', case=False, na=False
+    )]
   if d.empty:
     return empty
 
@@ -5991,14 +6008,24 @@ def build_turnover_order_detail(df, report_date, filter_nv=None):
     ten_kh = str(g[ten_kh_col].iloc[0]).strip() if ten_kh_col and ten_kh_col in g.columns else ''
     if 'Ngày tạo đơn hàng' in g.columns:
       ngay = pd.to_datetime(g['Ngày tạo đơn hàng'].iloc[0], dayfirst=True, errors='coerce')
-      ngay_s = ngay.strftime('%d/%m/%Y %H:%M') if pd.notna(ngay) else rd.strftime('%d/%m/%Y')
+      ngay_s = ngay.strftime('%d/%m/%Y %H:%M') if pd.notna(ngay) else (
+          g['date'].iloc[0].strftime('%d/%m/%Y') if hasattr(g['date'].iloc[0], 'strftime') else str(g['date'].iloc[0])
+      )
     else:
-      ngay_s = rd.strftime('%d/%m/%Y')
+      _gd = g['date'].iloc[0] if 'date' in g.columns else rd
+      ngay_s = _gd.strftime('%d/%m/%Y') if hasattr(_gd, 'strftime') else str(_gd)
+    l1_val = ''
+    if 'L1' in g.columns:
+      try:
+        l1_val = str(g['L1'].dropna().astype(str).iloc[0]).strip()
+      except Exception:
+        l1_val = str(g['L1'].iloc[0]).strip() if len(g) else ''
     rows.append({
         'STT': 0,
         'Tên NVBH': nv,
         'Mã KH': ma_kh,
         'Tên KH': ten_kh,
+        'L1': l1_val,
         'Mã ĐH': ma_dh,
         'Giá trị ĐH [Doanh Số]': int(round(sales)),
         'Ngày ĐH': ngay_s,
@@ -6018,6 +6045,7 @@ def build_turnover_order_detail(df, report_date, filter_nv=None):
       'Tên NVBH': 'TỔNG CỘNG',
       'Mã KH': '',
       'Tên KH': '',
+      'L1': '',
       'Mã ĐH': '',
       'Giá trị ĐH [Doanh Số]': int(round(out['_sales'].sum())),
       'Ngày ĐH': '',
@@ -6029,10 +6057,10 @@ def build_turnover_order_detail(df, report_date, filter_nv=None):
   return out
 
 
-def build_turnover_product_detail(df, report_date, filter_nv=None):
-  """Bảng 2 TURNOVER: Chi tiết từng SP theo ĐH/ngày BC."""
+def build_turnover_product_detail(df, report_date, filter_nv=None, l1_filter=None, date_list=None):
+  """Bảng 2: Chi tiết từng SP. date_list=None → đầu tháng→report_date."""
   cols = [
-      'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'Mã ĐH',
+      'STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'L1', 'Mã ĐH',
       'Mã SP', 'Tên sản phẩm', 'Số lượng', 'Thành tiền', 'Ngày ĐH', 'Sub Division',
   ]
   empty = pd.DataFrame(columns=cols)
@@ -6043,11 +6071,26 @@ def build_turnover_product_detail(df, report_date, filter_nv=None):
   except Exception:
     return empty
 
-  d = df[df['date'] == rd].copy()
+  d = df.copy()
+  if date_list is not None:
+    d = d[d['date'].isin(set(date_list))]
+  else:
+    try:
+      _ms = date(rd.year, rd.month, 1)
+      d = d[(d['date'] >= _ms) & (d['date'] <= rd)]
+    except Exception:
+      d = d[d['date'] == rd]
   if d.empty:
     return empty
   if nv_selected(filter_nv):
     d = filter_df_by_nv(d, 'Tên NVBH', filter_nv)
+  if d.empty:
+    return empty
+  if l1_filter and 'L1' in d.columns:
+    _lf = str(l1_filter).strip().lower()
+    d = d[d['L1'].astype(str).str.lower().str.contains(
+        'off' if _lf == 'off' else 'on', case=False, na=False
+    )]
   if d.empty:
     return empty
 
@@ -6077,6 +6120,7 @@ def build_turnover_product_detail(df, report_date, filter_nv=None):
         'Tên NVBH': str(r.get('Tên NVBH', '')).strip(),
         'Mã KH': r.get('_ma', ''),
         'Tên KH': str(r.get(ten_kh_col, '')).strip() if ten_kh_col else '',
+        'L1': str(r.get('L1', '')).strip() if 'L1' in d.columns else '',
         'Mã ĐH': str(r.get(order_col, '')).strip() if order_col else '',
         'Mã SP': str(r.get(sp_col, '')).strip() if sp_col else '',
         'Tên sản phẩm': str(r.get(name_col, '')).strip() if name_col else '',
@@ -6095,6 +6139,7 @@ def build_turnover_product_detail(df, report_date, filter_nv=None):
       'Tên NVBH': 'TỔNG CỘNG',
       'Mã KH': '',
       'Tên KH': '',
+      'L1': '',
       'Mã ĐH': '',
       'Mã SP': '',
       'Tên sản phẩm': '',
@@ -6105,6 +6150,166 @@ def build_turnover_product_detail(df, report_date, filter_nv=None):
   }
   out = pd.concat([out, pd.DataFrame([tot])], ignore_index=True)
   return out
+
+
+
+def _filter_turnover_detail_df(df, f_ngay=None, f_nv=None, f_ma=None, f_ten=None, f_l1=None):
+  """Lọc bảng chi tiết theo slicer (sau khi đã build)."""
+  if df is None or df.empty:
+    return df
+  out = df.copy()
+  is_tot = out['Tên NVBH'].astype(str).str.contains('TỔNG|TOTAL', case=False, na=False) if 'Tên NVBH' in out.columns else pd.Series(False, index=out.index)
+  body = out[~is_tot].copy()
+  tot = out[is_tot].copy()
+  if f_ngay:
+    # Ngày ĐH dạng dd/mm/yyyy hoặc dd/mm/yyyy HH:MM — so khớp phần ngày
+    def _day_key(s):
+      s = str(s).strip()
+      return s[:10] if len(s) >= 10 else s
+    keys = set(_day_key(x) for x in f_ngay)
+    body = body[body['Ngày ĐH'].map(_day_key).isin(keys)]
+  if f_nv:
+    body = body[body['Tên NVBH'].astype(str).isin([str(x) for x in f_nv])]
+  if f_ma:
+    body = body[body['Mã KH'].astype(str).isin([str(x) for x in f_ma])]
+  if f_ten:
+    body = body[body['Tên KH'].astype(str).isin([str(x) for x in f_ten])]
+  if f_l1 and 'L1' in body.columns:
+    fl = [str(x).strip().lower() for x in f_l1]
+    body = body[body['L1'].astype(str).str.lower().apply(
+        lambda v: any(x in v for x in fl) or v in fl
+    )]
+  if body.empty:
+    return body
+  body = body.reset_index(drop=True)
+  body['STT'] = range(1, len(body) + 1)
+  # rebuild total
+  if not tot.empty:
+    tr = tot.iloc[0].to_dict()
+    for c in ('Giá trị ĐH [Doanh Số]', 'LPPC', 'LPPC trừ Meat & Beer', 'Số lượng', 'Thành tiền'):
+      if c in body.columns:
+        try:
+          tr[c] = body[c].sum() if c in ('Số lượng', 'Thành tiền') else int(body[c].sum())
+        except Exception:
+          pass
+    tr['STT'] = ''
+    tr['Tên NVBH'] = 'TỔNG CỘNG'
+    body = pd.concat([body, pd.DataFrame([tr])], ignore_index=True)
+  return body
+
+
+def _render_detail_slicers_and_tables(df_src, report_date, filter_nv, key_prefix, l1_fixed=None, show_l1_slicer=False):
+  """Slicer dùng chung + 2 bảng chi tiết ĐH / SP.
+  l1_fixed: 'OFF'|'ON'|None — ép kênh (PC BT / PC ON).
+  show_l1_slicer: True chỉ ở TURNOVER.
+  """
+  # Build full (đầu tháng → ngày BC) rồi lọc bằng slicer
+  df_ord_all = build_turnover_order_detail(
+      df_src, report_date, filter_nv, l1_filter=l1_fixed, date_list=None
+  )
+  df_sp_all = build_turnover_product_detail(
+      df_src, report_date, filter_nv, l1_filter=l1_fixed, date_list=None
+  )
+  # Options từ data (bỏ dòng tổng)
+  def _opts(frame, col):
+    if frame is None or frame.empty or col not in frame.columns:
+      return []
+    s = frame[~frame['Tên NVBH'].astype(str).str.contains('TỔNG|TOTAL', case=False, na=False)][col]
+    return sorted([x for x in s.dropna().astype(str).unique().tolist() if x and x.lower() not in ('nan', 'none')])
+
+  # Ngày: lấy unique phần dd/mm/yyyy
+  def _day_opts(frame):
+    if frame is None or frame.empty or 'Ngày ĐH' not in frame.columns:
+      return []
+    s = frame[~frame['Tên NVBH'].astype(str).str.contains('TỔNG|TOTAL', case=False, na=False)]['Ngày ĐH']
+    days = sorted(set(str(x).strip()[:10] for x in s if str(x).strip()), reverse=True)
+    return days
+
+  ngay_opts = _day_opts(df_ord_all) or _day_opts(df_sp_all)
+  nv_opts = _opts(df_ord_all, 'Tên NVBH') or _opts(df_sp_all, 'Tên NVBH')
+  ma_opts = _opts(df_ord_all, 'Mã KH') or _opts(df_sp_all, 'Mã KH')
+  ten_opts = _opts(df_ord_all, 'Tên KH') or _opts(df_sp_all, 'Tên KH')
+  l1_opts = _opts(df_ord_all, 'L1') or _opts(df_sp_all, 'L1')
+
+  st.markdown(
+      '<p style="font-weight:800;color:#034ea2;margin:10px 0 4px;">🔎 Lọc chi tiết đơn hàng / sản phẩm</p>',
+      unsafe_allow_html=True,
+  )
+  if show_l1_slicer:
+    c1, c2, c3, c4, c5 = st.columns(5)
+  else:
+    c1, c2, c3, c4 = st.columns(4)
+  with c1:
+    st.markdown('<p class="filter-label">Ngày ĐH</p>', unsafe_allow_html=True)
+    f_ngay = st.multiselect(
+        'Ngày ĐH', options=ngay_opts, default=[],
+        key=f'{key_prefix}_ngay', label_visibility='collapsed',
+        placeholder='Tất cả ngày',
+    )
+  with c2:
+    st.markdown('<p class="filter-label">Tên NVBH</p>', unsafe_allow_html=True)
+    f_nv = st.multiselect(
+        'NVBH', options=nv_opts, default=[],
+        key=f'{key_prefix}_nv', label_visibility='collapsed',
+        placeholder='Tất cả NVBH',
+    )
+  with c3:
+    st.markdown('<p class="filter-label">Mã KH</p>', unsafe_allow_html=True)
+    f_ma = st.multiselect(
+        'Mã KH', options=ma_opts, default=[],
+        key=f'{key_prefix}_ma', label_visibility='collapsed',
+        placeholder='Tất cả Mã KH',
+    )
+  with c4:
+    st.markdown('<p class="filter-label">Tên KH</p>', unsafe_allow_html=True)
+    f_ten = st.multiselect(
+        'Tên KH', options=ten_opts, default=[],
+        key=f'{key_prefix}_ten', label_visibility='collapsed',
+        placeholder='Tất cả Tên KH',
+    )
+  f_l1 = []
+  if show_l1_slicer:
+    with c5:
+      st.markdown('<p class="filter-label">L1</p>', unsafe_allow_html=True)
+      f_l1 = st.multiselect(
+          'L1', options=l1_opts, default=[],
+          key=f'{key_prefix}_l1', label_visibility='collapsed',
+          placeholder='Tất cả L1',
+      )
+
+  df_ord = _filter_turnover_detail_df(
+      df_ord_all, f_ngay or None, f_nv or None, f_ma or None, f_ten or None,
+      f_l1 or None if show_l1_slicer else None,
+  )
+  df_sp = _filter_turnover_detail_df(
+      df_sp_all, f_ngay or None, f_nv or None, f_ma or None, f_ten or None,
+      f_l1 or None if show_l1_slicer else None,
+  )
+
+  _suffix = ''
+  if l1_fixed == 'OFF':
+    _suffix = ' — Kênh OFF'
+  elif l1_fixed == 'ON':
+    _suffix = ' — Kênh ON'
+
+  st.markdown(
+      render_turnover_detail_html(
+          df_ord,
+          title=f'📋 CHI TIẾT ĐƠN HÀNG{_suffix}',
+          money_cols=['Giá trị ĐH [Doanh Số]'],
+          max_rows=25,
+      ),
+      unsafe_allow_html=True,
+  )
+  st.markdown(
+      render_turnover_detail_html(
+          df_sp,
+          title=f'📦 CHI TIẾT SẢN PHẨM THEO ĐƠN HÀNG{_suffix}',
+          money_cols=['Thành tiền'],
+          max_rows=25,
+      ),
+      unsafe_allow_html=True,
+  )
 
 
 def render_turnover_detail_html(df, title, money_cols=None, max_rows=25):
@@ -18424,34 +18629,16 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(render_html_table(df_display), unsafe_allow_html=True)
 
-    # ---- Chi tiết ĐH theo ngày + Chi tiết SP ----
+    # ---- Chi tiết ĐH + SP + Slicer (TURNOVER: có lọc L1) ----
     try:
-      df_ord = build_turnover_order_detail(df, report_date, filter_nv)
-      st.markdown(
-          render_turnover_detail_html(
-              df_ord,
-              title=f'📋 CHI TIẾT ĐƠN HÀNG THEO NGÀY — {report_date.strftime("%d/%m/%Y")}',
-              money_cols=['Giá trị ĐH [Doanh Số]'],
-              max_rows=25,
-          ),
-          unsafe_allow_html=True,
+      _render_detail_slicers_and_tables(
+          df, report_date, filter_nv,
+          key_prefix='to_detail',
+          l1_fixed=None,
+          show_l1_slicer=True,
       )
-    except Exception as _e_ord:
-      st.caption(f'Không tải được bảng Chi tiết ĐH: {_e_ord}')
-
-    try:
-      df_sp = build_turnover_product_detail(df, report_date, filter_nv)
-      st.markdown(
-          render_turnover_detail_html(
-              df_sp,
-              title=f'📦 CHI TIẾT SẢN PHẨM THEO ĐƠN HÀNG — {report_date.strftime("%d/%m/%Y")}',
-              money_cols=['Thành tiền'],
-              max_rows=25,
-          ),
-          unsafe_allow_html=True,
-      )
-    except Exception as _e_sp:
-      st.caption(f'Không tải được bảng Chi tiết SP: {_e_sp}')
+    except Exception as _e_det:
+      st.caption(f'Không tải được bảng chi tiết: {_e_det}')
 
     df_eval = df_r.iloc[:-1].copy()
     df_eval['_pct_val'] = (
@@ -19971,6 +20158,20 @@ if _nav == '📊 BÁO CÁO KPI':
           else x
       )
     st.markdown(render_html_table(_df_show), unsafe_allow_html=True)
+
+    # Chi tiết ĐH/SP cho PC BT (OFF) & PC ON (ON) + Slicer
+    if selected_kpi in ('PC_BT', 'PC_ON'):
+      _l1 = 'OFF' if selected_kpi == 'PC_BT' else 'ON'
+      try:
+        _render_detail_slicers_and_tables(
+            df, report_date, filter_nv,
+            key_prefix=f'pc_{selected_kpi.lower()}_detail',
+            l1_fixed=_l1,
+            show_l1_slicer=False,
+        )
+      except Exception as _e_det:
+        st.caption(f'Không tải được bảng chi tiết: {_e_det}')
+
     df_eval = df_r.iloc[:-1].copy()
     _pc = '% MTD'
     df_eval['_pct_val'] = (
