@@ -16028,6 +16028,94 @@ def compute_hv_day_metrics(df_detail, df_rpt, report_date):
   return out
 
 
+
+def _df_perf_single_nv(df_perf, nv_name):
+  """Tạo df_perf 2 dòng (NV + Total=NV) để tái dùng render metric ngày cho 1 NV."""
+  if df_perf is None or df_perf.empty or 'Tên NVBH' not in df_perf.columns:
+    return pd.DataFrame()
+  body = df_perf.iloc[:-1]
+  sub = body[body['Tên NVBH'].astype(str).str.strip() == str(nv_name).strip()]
+  if sub.empty:
+    return pd.DataFrame()
+  r = sub.iloc[0].to_dict()
+  tot = dict(r)
+  tot['Tên NVBH'] = f'{nv_name} Total'
+  if 'STT' in tot:
+    tot['STT'] = ''
+  return pd.DataFrame([r, tot])
+
+
+def render_hs_per_nv_blocks(
+    df_perf, df, report_date, targets, turnover_targets, mcp,
+    lppc_moc, timegone, df_combo_off=None, df_combo_on=None,
+    df_cat=None, df_brand=None,
+):
+  """Render bộ Kết quả ngày + Lũy kế tháng cho TỪNG NV (dưới Chart)."""
+  if df_perf is None or df_perf.empty or 'Tên NVBH' not in df_perf.columns:
+    return
+  body = df_perf.iloc[:-1].copy()
+  body = body[~body['Tên NVBH'].astype(str).str.contains(
+      r'CDGT-SMVL|vacant|TOTAL|TỔNG', case=False, na=False, regex=True
+  )]
+  if body.empty:
+    return
+
+  st.markdown(
+      '<div style="margin:22px 0 8px 0;padding:10px 12px;background:#edf2f7;'
+      'border-left:4px solid #034ea2;border-radius:8px;">'
+      '<div style="font-size:16px;font-weight:800;color:#1a365d;">'
+      '👤 KẾT QUẢ NGÀY &amp; LUỸ KẾ THÁNG THEO TỪNG NHÂN VIÊN</div>'
+      '<div style="font-size:12px;color:#4a5568;margin-top:2px;">'
+      'Mỗi NV một bộ 2 bảng giống phần Tổng ở trên</div></div>',
+      unsafe_allow_html=True,
+  )
+
+  for i, (_, row) in enumerate(body.iterrows()):
+    nv = str(row.get('Tên NVBH', '')).strip()
+    if not nv or nv.lower() in ('nan', 'none'):
+      continue
+    with st.expander(f'👤 {nv}', expanded=(i == 0)):
+      try:
+        df_nv = _df_perf_single_nv(df_perf, nv)
+        if df_nv is None or df_nv.empty:
+          st.caption('Không có dữ liệu ngày.')
+        else:
+          html_day = render_hs_daily_metric_cards(
+              df_nv, report_date, lppc_moc=lppc_moc,
+              aso_off=None, aso_on=None,
+              mbs_cat=None, mbs_brand=None, hv=None, aso_extra=None,
+              cat_rows=None,
+          )
+          if html_day:
+            st.markdown(html_day, unsafe_allow_html=True)
+      except Exception as e:
+        st.caption(f'Kết quả ngày — lỗi: {e}')
+
+      try:
+        rows_nv = build_hs_monthly_kpi_rows(
+            df, report_date, targets or {}, turnover_targets, [nv], mcp
+        )
+        # Combo/MBS summary theo NV
+        try:
+          _co, _cn, _mc, _mb = build_hs_combo_mbs_summary(
+              df, report_date,
+              df_combo_off, df_combo_on, df_cat, df_brand,
+              mcp, [nv],
+          )
+        except Exception:
+          _co = _cn = _mc = _mb = None
+        html_mon = render_hs_monthly_kpi_table(
+            rows_nv, timegone,
+            combo_off=_co, combo_on=_cn,
+            mbs_cat=_mc, mbs_brand=_mb,
+            report_date=report_date if isinstance(report_date, date) else pd.Timestamp(report_date).date(),
+        )
+        if html_mon:
+          st.markdown(html_mon, unsafe_allow_html=True)
+      except Exception as e:
+        st.caption(f'Luỹ kế tháng — lỗi: {e}')
+
+
 def render_hs_daily_metric_cards(df_perf, report_date, lppc_moc=4.3, aso_off=None, aso_on=None, mbs_cat=None, mbs_brand=None,
                                  hv=None, aso_extra=None, cat_rows=None):
   """Bảng 1: Metric card KPI theo ngày — 2 hàng × 6 card, responsive mobile."""
@@ -19320,6 +19408,32 @@ if _nav == '📊 BÁO CÁO KPI':
               })
         except Exception as _e_perf_chart:
           st.caption(f'Không vẽ được chart Hiệu Suất: {_e_perf_chart}')
+
+        # ===== Bộ Kết quả ngày + Luỹ kế tháng theo TỪNG NV (dưới Chart) =====
+        try:
+          try:
+            _moc_nv = float(get_month_cfg().get('lppc_moc', 4.3) or 4.3)
+          except Exception:
+            _moc_nv = 4.3
+          try:
+            _rd_nv = report_date if isinstance(report_date, date) else pd.Timestamp(report_date).date()
+            _wd_nv, _el_nv, _rem_nv, _tg_nv = get_timegone_stats(_rd_nv)
+          except Exception:
+            _tg_nv = float(_CURRENT_TIMEGONE or 0)
+          try:
+            _tgts_nv = get_targets()
+          except Exception:
+            _tgts_nv = targets if 'targets' in dir() else {}
+          render_hs_per_nv_blocks(
+              df_perf, df, report_date, _tgts_nv, turnover_targets, mcp,
+              lppc_moc=_moc_nv, timegone=_tg_nv,
+              df_combo_off=df_combo_off,
+              df_combo_on=df_combo_on,
+              df_cat=df_cat,
+              df_brand=df_brand,
+          )
+        except Exception as _e_nv_blocks:
+          st.caption(f'Không tải được khối theo NV: {_e_nv_blocks}')
 
         # Nhận xét nằm dưới các bảng chi tiết
         st.markdown(build_performance_comments(df_perf), unsafe_allow_html=True)
