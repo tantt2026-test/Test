@@ -16045,12 +16045,16 @@ def _df_perf_single_nv(df_perf, nv_name):
   return pd.DataFrame([r, tot])
 
 
+
 def render_hs_per_nv_blocks(
     df_perf, df, report_date, targets, turnover_targets, mcp,
     lppc_moc, timegone, df_combo_off=None, df_combo_on=None,
     df_cat=None, df_brand=None,
 ):
-  """Render bộ Kết quả ngày + Lũy kế tháng cho TỪNG NV (dưới Chart)."""
+  """Render bộ Kết quả ngày + Lũy kế tháng cho TỪNG NV (dưới Chart).
+  Chỉ tiêu / TH / ASO / MBS / Combo đều tính theo từng NV từ data GitHub.
+  Không hiện Top/Bottom trên metric card.
+  """
   if df_perf is None or df_perf.empty or 'Tên NVBH' not in df_perf.columns:
     return
   body = df_perf.iloc[:-1].copy()
@@ -16066,9 +16070,139 @@ def render_hs_per_nv_blocks(
       '<div style="font-size:16px;font-weight:800;color:#1a365d;">'
       '👤 KẾT QUẢ NGÀY &amp; LUỸ KẾ THÁNG THEO TỪNG NHÂN VIÊN</div>'
       '<div style="font-size:12px;color:#4a5568;margin-top:2px;">'
-      'Mỗi NV một bộ 2 bảng giống phần Tổng ở trên</div></div>',
+      'Mỗi NV: Chỉ tiêu &amp; thực hiện tính riêng theo data NV đó</div></div>',
       unsafe_allow_html=True,
   )
+
+  def _nma(x):
+    if pd.isna(x):
+      return ''
+    s = str(x).strip()
+    if s.endswith('.0'):
+      s = s[:-2]
+    try:
+      return str(int(float(s)))
+    except Exception:
+      return s
+
+  def _thu_codes_for_date(d0):
+    wd = d0.weekday()
+    code = str(wd + 2) if wd < 6 else 'CN'
+    cycles = {code}
+    if code in ('2', '5'):
+      cycles.add('25')
+    if code in ('3', '6'):
+      cycles.add('36')
+    if code in ('4', '7'):
+      cycles.add('47')
+    return cycles
+
+  def _compute_aso_for_nv(nv_name):
+    """ASO ALL OFF/ON theo NV: TH ngày / MTD / CT ngày (lịch VT)."""
+    ao = {'th': 0, 'mtd': 0, 'ct': 0, 'ct_day': 0}
+    an = {'th': 0, 'mtd': 0, 'ct': 0, 'ct_day': 0}
+    try:
+      rd0 = report_date if isinstance(report_date, date) else pd.Timestamp(report_date).date()
+      mstart = date(rd0.year, rd0.month, 1)
+      codes = _thu_codes_for_date(rd0)
+      route_off, route_on = set(), set()
+      if mcp is not None and not mcp.empty:
+        c_ch = find_col(mcp, ['Outlet_code', 'Outlet Code', 'Mã CH'])
+        c_l1 = find_col(mcp, ['L1', 'Loại hình', 'Kênh'])
+        c_nv = find_col(mcp, ['SM Name', 'SM name', 'Tên NVBH', 'Nhân viên'])
+        c_thu = find_col(mcp, [
+            'Thứ', 'Thu', 'Visit day', 'Ngày VT', 'F', 'Frequency',
+            'Tần suất', 'Chu kỳ', 'Visit Day',
+        ])
+        m = mcp
+        if c_nv:
+          m = filter_df_by_nv(mcp, c_nv, [nv_name])
+        if c_ch and not m.empty:
+          if c_thu:
+            thu = m[c_thu].astype(str).str.strip()
+            on_day = thu.isin(codes) | thu.apply(
+                lambda x: any(c in str(x) for c in codes if c != 'CN')
+            )
+            mday = m[on_day]
+          else:
+            mday = m
+          for _, r in mday.iterrows():
+            ma = _nma(r[c_ch])
+            if not ma:
+              continue
+            l1 = str(r[c_l1]).lower() if c_l1 and pd.notna(r.get(c_l1)) else ''
+            if 'on' in l1 and 'off' not in l1:
+              route_on.add(ma)
+            else:
+              route_off.add(ma)
+        ao['ct'] = ao['ct_day'] = len(route_off)
+        an['ct'] = an['ct_day'] = len(route_on)
+
+      if df is not None and not df.empty and 'date' in df.columns:
+        d_mtd = df[(df['date'] >= mstart) & (df['date'] <= rd0)].copy()
+        d_day = df[df['date'] == rd0].copy()
+        if 'Tên NVBH' in d_mtd.columns:
+          d_mtd = filter_df_by_nv(d_mtd, 'Tên NVBH', [nv_name])
+          d_day = filter_df_by_nv(d_day, 'Tên NVBH', [nv_name])
+        if 'Mã CH' in d_mtd.columns:
+          d_mtd['_ma'] = d_mtd['Mã CH'].map(_nma)
+          d_day['_ma'] = d_day['Mã CH'].map(_nma)
+          for route, bucket in ((route_off, ao), (route_on, an)):
+            if not route:
+              continue
+            th = int(len(set(d_day['_ma']) & route)) if not d_day.empty else 0
+            mtd_n = int(len(set(d_mtd['_ma']) & route)) if not d_mtd.empty else 0
+            bucket['th'] = th
+            bucket['mtd'] = mtd_n
+    except Exception:
+      pass
+    return ao, an
+
+  def _mbs_for_nv(nv_name):
+    mbs_cat_m = mbs_brand_m = hv_m = None
+    try:
+      if df_cat is not None and not getattr(df_cat, 'empty', True):
+        rc = build_mbs_cat_report(df_cat, [nv_name], mcp_df=mcp)
+        mbs_cat_m = compute_mbs_day_metric(rc.get('df_detail'), df, report_date)
+      if df_brand is not None and not getattr(df_brand, 'empty', True):
+        rb = build_mbs_brand_report(df_brand, [nv_name], mcp_df=mcp)
+        mbs_brand_m = compute_mbs_day_metric(rb.get('df_detail'), df, report_date)
+        det = rb.get('df_detail', pd.DataFrame())
+        if det is not None and not det.empty and 'Mức đạt' in det.columns:
+          hv_m = compute_hv_day_metrics(det, df, report_date)
+    except Exception:
+      pass
+    return mbs_cat_m, mbs_brand_m, hv_m
+
+  def _aso_extra_for_nv(nv_name):
+    extra = []
+    try:
+      tgts = targets or {}
+      for code, ck, lab, col in (
+          ('ASO_PL', 'aso_pl', 'ASO PHÚC LONG', '#2f855a'),
+          ('ASO_XOT', 'aso_xot', 'ASO XỐT GIA VỊ', '#c53030'),
+      ):
+        if not get_month_cfg().get(ck):
+          continue
+        try:
+          ra, _, _ = build_report(df, report_date, tgts, code, [nv_name], mcp_df=mcp)
+          if ra is None or ra.empty:
+            continue
+          tr = ra.iloc[-1]
+          extra.append((
+              lab,
+              {
+                  'th': tr.get('Thực Hiện Ngày', 0),
+                  'mtd': tr.get('MTD', 0),
+                  'ct': tr.get('Chỉ Tiêu KPI', 0),
+              },
+              col,
+          ))
+        except Exception:
+          pass
+    except Exception:
+      pass
+    return extra
 
   for i, (_, row) in enumerate(body.iterrows()):
     nv = str(row.get('Tên NVBH', '')).strip()
@@ -16080,11 +16214,19 @@ def render_hs_per_nv_blocks(
         if df_nv is None or df_nv.empty:
           st.caption('Không có dữ liệu ngày.')
         else:
+          ao, an = _compute_aso_for_nv(nv)
+          mc, mb, hv = _mbs_for_nv(nv)
+          extra = _aso_extra_for_nv(nv)
+          try:
+            cat_rows = hs_day_cat_sellout(df, report_date, [nv], df_nv)
+          except Exception:
+            cat_rows = None
           html_day = render_hs_daily_metric_cards(
               df_nv, report_date, lppc_moc=lppc_moc,
-              aso_off=None, aso_on=None,
-              mbs_cat=None, mbs_brand=None, hv=None, aso_extra=None,
-              cat_rows=None,
+              aso_off=ao, aso_on=an,
+              mbs_cat=mc, mbs_brand=mb, hv=hv, aso_extra=extra,
+              cat_rows=cat_rows,
+              hide_rank=True,
           )
           if html_day:
             st.markdown(html_day, unsafe_allow_html=True)
@@ -16095,19 +16237,18 @@ def render_hs_per_nv_blocks(
         rows_nv = build_hs_monthly_kpi_rows(
             df, report_date, targets or {}, turnover_targets, [nv], mcp
         )
-        # Combo/MBS summary theo NV
         try:
-          _co, _cn, _mc, _mb = build_hs_combo_mbs_summary(
+          co, cn, mc2, mb2 = build_hs_combo_mbs_summary(
               df, report_date,
               df_combo_off, df_combo_on, df_cat, df_brand,
               mcp, [nv],
           )
         except Exception:
-          _co = _cn = _mc = _mb = None
+          co = cn = mc2 = mb2 = None
         html_mon = render_hs_monthly_kpi_table(
             rows_nv, timegone,
-            combo_off=_co, combo_on=_cn,
-            mbs_cat=_mc, mbs_brand=_mb,
+            combo_off=co, combo_on=cn,
+            mbs_cat=mc2, mbs_brand=mb2,
             report_date=report_date if isinstance(report_date, date) else pd.Timestamp(report_date).date(),
         )
         if html_mon:
@@ -16116,9 +16257,12 @@ def render_hs_per_nv_blocks(
         st.caption(f'Luỹ kế tháng — lỗi: {e}')
 
 
+
 def render_hs_daily_metric_cards(df_perf, report_date, lppc_moc=4.3, aso_off=None, aso_on=None, mbs_cat=None, mbs_brand=None,
-                                 hv=None, aso_extra=None, cat_rows=None):
-  """Bảng 1: Metric card KPI theo ngày — 2 hàng × 6 card, responsive mobile."""
+                                 hv=None, aso_extra=None, cat_rows=None, hide_rank=False):
+  """Bảng 1: Metric card KPI theo ngày — 2 hàng × 6 card, responsive mobile.
+  hide_rank=True: không hiện Top/Bottom (dùng cho metric theo từng NV).
+  """
   if df_perf is None or df_perf.empty:
     return ''
   tot = df_perf.iloc[-1]
@@ -16131,6 +16275,8 @@ def render_hs_daily_metric_cards(df_perf, report_date, lppc_moc=4.3, aso_off=Non
 
   def _rank(vals):
     """{Tên NVBH: % đạt} → 2 dòng chú thích Top 3 / Bottom 3 NVBH (bỏ vị trí trống như 10KF1326-CDGT-SMVL)."""
+    if hide_rank:
+      return []
     items = [(n, float(v)) for n, v in (vals or {}).items()
              if n and not re.search(r'\d', str(n)) and v is not None and pd.notna(v)]
     if not items or len({v for _, v in items}) == 1:  # chưa có ai / mọi NV bằng nhau → không xếp hạng
