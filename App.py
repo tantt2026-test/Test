@@ -5037,10 +5037,16 @@ def build_cov_mcp_off_vip(mcp_df, df_rpt, report_date, filter_nv=None, sales_his
   return out[keep]
 
 
-def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng T)'):
-  """Format bảng COV VIP giống các bảng KPI / Weekly."""
+def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng T)', timegone_pct=None):
+  """Format bảng COV VIP giống các bảng KPI / Weekly.
+  % COV tô màu theo Timegone (Tháng T) — rule chung: < moc đỏ, moc→moc+5 xanh, >moc+5 tím.
+  """
   if df is None or df.empty:
     return f'<p style="color:#718096;">Không có dữ liệu — {title}</p>'
+  try:
+    _moc = float(timegone_pct) if timegone_pct is not None else float(_CURRENT_TIMEGONE or 100)
+  except Exception:
+    _moc = 100.0
   cols = [c for c in df.columns if not str(c).startswith('_')]
   th = (
       'background-color:#1a365d !important;color:#ffffff !important;'
@@ -5085,8 +5091,20 @@ def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng T
       cls = 'row-total-cell' if is_tot else ''
       if is_pct:
         try:
-          style_extra = color_pct_bg(val)
-          cls = (color_pct_class(val) + (' row-total-cell' if is_tot else '')).strip()
+          style_extra = color_pct_bg(val, moc=_moc)
+          cls = (color_pct_class(val, moc=_moc) + (' row-total-cell' if is_tot else '')).strip()
+          # % đã tô màu → không dùng nền xanh đậm dòng tổng cho ô này
+          if is_tot:
+            bg_cell = ''
+            fg_cell = ''
+          else:
+            bg_cell = f'background-color:{bg} !important;'
+            fg_cell = f'color:{fg} !important;'
+          html.append(
+              f'<td data-colored="1" class="{cls}" style="{td}{bg_cell}{fg_cell}'
+              f'font-weight:{"900" if is_tot else "700"};{sticky}{style_extra}">{val}</td>'
+          )
+          continue
         except Exception:
           pass
       html.append(
@@ -5096,6 +5114,80 @@ def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng T
     html.append('</tr>')
   html.append('</tbody></table></div>')
   return ''.join(html)
+
+
+
+def build_cov_vip_comments(df, title='COV MCP OFF VIP', timegone_pct=None):
+  """Nhận xét bảng COV MCP OFF theo VIP3/VIP5/VIPSI (Tháng T).
+  - Top 3 / Bottom 3 từng nhóm theo % COV
+  - So sánh team vs Timegone
+  """
+  if df is None or df.empty:
+    return ''
+  try:
+    tg = float(timegone_pct) if timegone_pct is not None else float(_CURRENT_TIMEGONE or 100)
+  except Exception:
+    tg = 100.0
+
+  body = df[~df['Tên NVBH'].astype(str).str.contains('TOTAL|TỔNG', case=False, na=False)].copy()
+  tot = df[df['Tên NVBH'].astype(str).str.contains('TOTAL|TỔNG', case=False, na=False)]
+  if body.empty:
+    return ''
+
+  groups = [g for g in ('VIP3', 'VIP5', 'VIPSI') if f'% COV {g}' in df.columns]
+
+  def _pct(row, g):
+    try:
+      return float(str(row.get(f'% COV {g}', '0')).replace('%', '').replace(',', '.').strip() or 0)
+    except Exception:
+      return 0.0
+
+  def _short(n):
+    n = str(n).strip()
+    return n.split()[-1] if n.split() else n
+
+  lines = []
+  lines.append(f'<div style="font-weight:800;color:#034ea2;margin-bottom:6px;">📊 NHẬN XÉT — {title}</div>')
+  lines.append(
+      f'<div style="font-size:12.5px;color:#2d3748;margin-bottom:4px;">'
+      f'Mốc Timegone = <b>{tg:.1f}%</b> | % COV = ASO/MCP theo từng nhóm VIP</div>'
+  )
+  lines.append('<ul style="margin:0;padding-left:18px;line-height:1.55;font-size:13px;">')
+
+  # Team totals
+  if not tot.empty:
+    tr = tot.iloc[0]
+    parts = []
+    for g in groups:
+      p = _pct(tr, g)
+      mc = tr.get(f'MCP {g}', 0)
+      aso = tr.get(f'ASO {g}', 0)
+      flag = '🟢 kịp' if p >= tg else '🔴 chậm'
+      parts.append(f'{g}: {aso}/{mc} ({p:.1f}% — {flag})')
+    lines.append(f'<li><b>Team:</b> {" · ".join(parts)}</li>')
+
+  for g in groups:
+    ranked = []
+    for _, r in body.iterrows():
+      nv = str(r.get('Tên NVBH', '')).strip()
+      if not nv:
+        continue
+      ranked.append((_short(nv), _pct(r, g), r.get(f'ASO {g}', 0), r.get(f'MCP {g}', 0)))
+    if not ranked:
+      continue
+    ranked_up = sorted(ranked, key=lambda x: -x[1])
+    ranked_dn = sorted(ranked, key=lambda x: x[1])
+    top = ', '.join(f'{n} ({p:.1f}%)' for n, p, _, _ in ranked_up[:3])
+    bot = ', '.join(f'{n} ({p:.1f}%)' for n, p, _, _ in ranked_dn[:3])
+    n_ok = sum(1 for _, p, _, _ in ranked if p >= tg)
+    lines.append(
+        f'<li><b>{g}:</b> {n_ok}/{len(ranked)} NV ≥ Timegone · '
+        f'<span style="color:#228b22;font-weight:700;">Top:</span> {top} · '
+        f'<span style="color:#c53030;font-weight:700;">Bottom:</span> {bot}</li>'
+    )
+
+  lines.append('</ul>')
+  return f'<div class="note-box" style="margin:8px 0 14px 0;">{"".join(lines)}</div>'
 
 
 def build_weekly_trend_comments(df, title, pct_prefix='% COV'):
@@ -5370,13 +5462,29 @@ def render_weekly_lppc_html(df, timegone_pct=None):
         seen.add(lab)
         months.append(lab)
 
-  MOC_LPPC = 4.3
+  try:
+    MOC_LPPC = float(get_month_cfg().get('lppc_moc', 4.3) or 4.3)
+  except Exception:
+    MOC_LPPC = 4.3
+  try:
+    _tg = float(timegone_pct) if timegone_pct is not None else float(_CURRENT_TIMEGONE or 100)
+  except Exception:
+    _tg = 100.0
+  try:
+    _yc, _mc = _weekly_cur()
+    _cur_lab = f'{_mc:02d}/{_yc}'
+  except Exception:
+    _cur_lab = ''
 
   def _pct_style(lppc_val, lab):
+    """LPPC → % so với mốc lương; Tháng T tô theo Timegone, tháng cũ mốc 100%."""
     if lppc_val is None:
       return '', ''
-    pct = (lppc_val / MOC_LPPC) * 100.0
-    moc = 100.0
+    try:
+      pct = (float(lppc_val) / MOC_LPPC) * 100.0
+    except Exception:
+      return '', ''
+    moc = _tg if str(lab) == _cur_lab else 100.0
     if pct < moc:
       return ('pct-red',
               'background-color:#fed7d7 !important;color:#742a2a !important;font-weight:700 !important;')
@@ -20819,6 +20927,7 @@ if _nav == '📊 BÁO CÁO KPI':
             render_cov_vip_html(
                 df_cov_vip,
                 title=f'COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng {report_date.strftime("%m/%Y")})',
+                timegone_pct=_CURRENT_TIMEGONE,
             ),
             unsafe_allow_html=True,
         )
@@ -20829,6 +20938,17 @@ if _nav == '📊 BÁO CÁO KPI':
             mime='text/csv',
             key='dl_weekly_cov_vip',
         )
+        try:
+          st.markdown(
+              build_cov_vip_comments(
+                  df_cov_vip,
+                  title=f'COV MCP OFF VIP (Tháng {report_date.strftime("%m/%Y")})',
+                  timegone_pct=_CURRENT_TIMEGONE,
+              ),
+              unsafe_allow_html=True,
+          )
+        except Exception as _e_cmt_v:
+          st.caption(f'Nhận xét COV VIP: {_e_cmt_v}')
     except Exception as _e_vip:
       st.caption(f'COV VIP OFF: {_e_vip}')
 
@@ -21140,9 +21260,21 @@ if _nav == '📊 BÁO CÁO KPI':
               render_cov_vip_html(
                   df_cov_vip_aso,
                   title=f'COV MCP OFF — VIP3 / VIP5 / VIPSI (Tháng {report_date.strftime("%m/%Y")})',
+                  timegone_pct=_CURRENT_TIMEGONE,
               ),
               unsafe_allow_html=True,
           )
+          try:
+            st.markdown(
+                build_cov_vip_comments(
+                    df_cov_vip_aso,
+                    title=f'COV MCP OFF VIP (Tháng {report_date.strftime("%m/%Y")})',
+                    timegone_pct=_CURRENT_TIMEGONE,
+                ),
+                unsafe_allow_html=True,
+            )
+          except Exception:
+            pass
           st.download_button(
               '📥 Tải CSV COV MCP OFF VIP (ASO ALL)',
               data=df_cov_vip_aso.to_csv(index=False).encode('utf-8-sig'),
