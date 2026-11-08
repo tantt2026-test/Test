@@ -8280,21 +8280,79 @@ def build_combo_matrix(
         on_th_map = d_on.groupby('_nv_use')['_ds'].sum().astype(float).to_dict()
 
   # Chỉ Tiêu Doanh Số nhóm CH Combo
+  # Logic: CH thuộc DS Combo OFF/ON (sau lọc Thứ)
+  #   → map NV → TARGETACTUAL BY STD SKU -BY SM (TARGET SO tháng BC)
+  #   → chia theo tỷ lệ số CH OFF/ON trong DS Combo
   off_ct_ds_map, on_ct_ds_map = {}, {}
+  _tgt_by_nv = {}  # Tên NV → tổng TARGET SO tháng BC
   try:
-    _to_by_code = get_turnover_targets() or {}
+    _perf = load_perf_sku_data()
   except Exception:
-    _to_by_code = {}
-  try:
-    _roster = get_all_sm_roster() or {}
-  except Exception:
-    _roster = {}
-  _to_by_name = {}
-  for _code, _tgt in _to_by_code.items():
-    _nm = str(_roster.get(_code, '') or '').strip()
-    if _nm:
-      _to_by_name[_nm] = float(_tgt or 0)
-    _to_by_name[str(_code).strip()] = float(_tgt or 0)
+    _perf = pd.DataFrame()
+  if _perf is not None and not getattr(_perf, 'empty', True):
+    c_month = find_col(_perf, ['MONTH', 'Month', 'Tháng'])
+    c_tg = find_col(_perf, ['TARGET SO', 'Target SO', 'TARGET', 'Target', 'Chỉ tiêu'])
+    c_pnv = find_col(_perf, ['SM NAME', 'SM_NAME', 'Tên NVBH', 'SM name', 'Nhân viên'])
+    if c_month and c_tg and c_pnv:
+      p = _perf.copy()
+      # Tháng BC: MM/YYYY hoặc biến thể
+      _mk = f'{int(rd.month):02d}/{int(rd.year)}'
+      _mk_alt = [
+          _mk,
+          f'{int(rd.month)}/{int(rd.year)}',
+          f'{int(rd.month):02d}-{int(rd.year)}',
+          f'{int(rd.year)}-{int(rd.month):02d}',
+      ]
+      p['_month'] = p[c_month].astype(str).str.strip()
+      # Chuẩn hoá month cell (excel date → MM/YYYY)
+      def _norm_month_cell(v):
+        s = str(v).strip()
+        if not s or s.lower() in ('nan', 'none'):
+          return ''
+        # datetime
+        try:
+          ts = pd.to_datetime(v, errors='coerce')
+          if pd.notna(ts):
+            return f'{int(ts.month):02d}/{int(ts.year)}'
+        except Exception:
+          pass
+        # already MM/YYYY
+        if '/' in s:
+          parts = s.replace('-', '/').split('/')
+          try:
+            if len(parts[0]) == 4:  # YYYY/MM
+              return f'{int(parts[1]):02d}/{int(parts[0])}'
+            return f'{int(parts[0]):02d}/{int(parts[1])}'
+          except Exception:
+            return s
+        return s
+      p['_mk'] = p[c_month].map(_norm_month_cell)
+      p = p[p['_mk'] == _mk]
+      p['_tg'] = pd.to_numeric(p[c_tg], errors='coerce').fillna(0.0)
+      p['_nv'] = p[c_pnv].astype(str).str.strip()
+      p = p[~p['_nv'].str.lower().isin(['nan', 'none', ''])]
+      # Sum TARGET SO theo NV
+      _tgt_by_nv = p.groupby('_nv')['_tg'].sum().astype(float).to_dict()
+      # Thêm key chuẩn hoá khoảng trắng
+      _extra = {}
+      for _k, _v in list(_tgt_by_nv.items()):
+        _nk = re.sub(r'\s+', ' ', str(_k).strip())
+        if _nk != _k:
+          _extra[_nk] = _extra.get(_nk, 0) + float(_v)
+      _tgt_by_nv.update(_extra)
+
+  def _lookup_tgt(nv):
+    if nv in _tgt_by_nv:
+      return float(_tgt_by_nv[nv] or 0)
+    nk = re.sub(r'\s+', ' ', str(nv).strip())
+    if nk in _tgt_by_nv:
+      return float(_tgt_by_nv[nk] or 0)
+    # fuzzy: contains
+    nv_l = nk.lower()
+    for k, v in _tgt_by_nv.items():
+      if str(k).strip().lower() == nv_l:
+        return float(v or 0)
+    return 0.0
 
   all_nv_for_ct = (
       set(off_outlets.keys()) | set(on_outlets.keys())
@@ -8304,13 +8362,17 @@ def build_combo_matrix(
     n_off = int(off_target_map.get(nv, 0) or len(off_outlets.get(nv, [])))
     n_on = int(on_target_map.get(nv, 0) or len(on_outlets.get(nv, [])))
     n_combo = n_off + n_on
-    to_tgt = float(_to_by_name.get(nv, 0) or 0)
+    to_tgt = _lookup_tgt(nv)
     if to_tgt > 0 and n_combo > 0:
+      # Chia TARGET SO theo tỷ lệ số CH trong DS Combo OFF/ON (sau lọc Thứ)
       off_ct_ds_map[nv] = to_tgt * (n_off / n_combo)
       on_ct_ds_map[nv] = to_tgt * (n_on / n_combo)
+    elif to_tgt > 0:
+      off_ct_ds_map[nv] = to_tgt if n_off else 0
+      on_ct_ds_map[nv] = to_tgt if n_on else 0
     else:
-      off_ct_ds_map[nv] = 800_000 * n_off
-      on_ct_ds_map[nv] = 300_000 * n_on
+      off_ct_ds_map[nv] = 0
+      on_ct_ds_map[nv] = 0
 
   rows = []
   for nv in nv_list:
