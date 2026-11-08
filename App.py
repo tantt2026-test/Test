@@ -10109,12 +10109,25 @@ def render_new_outlet_on_html(df, title='TẠO MỚI KÊNH ON - CHUYÊN BEV'):
         sticky = f'position:sticky;left:0;z-index:1;background-color:{bg} !important;'
       elif c == 'Tên NVBH':
         sticky = f'position:sticky;left:42px;z-index:1;background-color:{bg} !important;text-align:left !important;font-weight:600;'
+      # Tô màu % MTD và MCP + Tạo Mới (mốc CT = 60)
+      color_this = False
+      v_pct = None
       if str(c).startswith('%'):
         try:
           v_pct = float(str(val).replace('%', '').replace(',', '.').strip() or 0)
         except Exception:
           v_pct = 0.0
-        # Rule % theo CT: <70 đỏ (gap>30), 70-100 cam/vàng, >=100 xanh
+        color_this = True
+      elif str(c).strip() == 'MCP + Tạo Mới':
+        try:
+          v_num = float(str(val).replace(',', '').strip() or 0)
+        except Exception:
+          v_num = 0.0
+        v_pct = (v_num / 60.0) * 100.0  # mốc 60
+        color_this = True
+
+      if color_this and v_pct is not None:
+        # <70% đỏ | 70–<100% cam | ≥100% xanh
         if v_pct < 70:
           cls, style_extra = 'pct-red', 'background-color:#fed7d7 !important;color:#742a2a !important;font-weight:800 !important;'
         elif v_pct < 100:
