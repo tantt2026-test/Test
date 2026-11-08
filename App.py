@@ -9798,7 +9798,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   - CT = 60 / NV
   - % MTD = (MCP ON + Tạo Mới MTD) / CT
   """
-  cols = ['STT', 'Tên NVBH', 'Total MCP ON', 'CT', 'MCP ON', 'Tạo Mới Ngày', 'MTD', '% MTD']
+  cols = ['STT', 'Tên NVBH', 'Total MCP ON', 'CT', 'MCP ON', 'Tạo Mới Ngày', 'Total Tạo Mới', 'MCP + Tạo Mới', '% MTD']
   empty = pd.DataFrame(columns=cols)
   if report_date is None:
     return empty
@@ -9966,20 +9966,23 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
     total_on = int(total_on_count.get(nv, 0))
     mtd = int(mtd_count.get(nv, 0))
     th_day = int(day_count.get(nv, 0))
-    # % MTD = (MCP ON + MTD) / CT  — KHÔNG dùng Total MCP ON
-    pct = round((mcp_n + mtd) / CT * 100, 1) if CT else 0.0
+    mcp_plus = mcp_n + mtd
+    # % MTD = (MCP + Tạo Mới) / CT  — KHÔNG dùng Total MCP ON
+    pct = round(mcp_plus / CT * 100, 1) if CT else 0.0
     rows.append({
         'Tên NVBH': nv,
         'Total MCP ON': total_on,
         'CT': CT,
         'MCP ON': mcp_n,
         'Tạo Mới Ngày': th_day,
-        'MTD': mtd,
+        'Total Tạo Mới': mtd,
+        'MCP + Tạo Mới': mcp_plus,
         '% MTD': f'{pct}%',
         '_pct': pct,
         '_mtd': mtd,
         '_mcp': mcp_n,
-        '_score': mcp_n + mtd,
+        '_score': mcp_plus,
+        '_gap': max(0, CT - mcp_plus),
     })
 
   out = pd.DataFrame(rows).sort_values('_score', ascending=False).reset_index(drop=True)
@@ -9989,9 +9992,10 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   tot_mcp = int(out['MCP ON'].sum())
   tot_ct = int(out['CT'].sum())
   tot_th = int(out['Tạo Mới Ngày'].sum())
-  tot_mtd = int(out['MTD'].sum())
+  tot_mtd = int(out['Total Tạo Mới'].sum())
+  tot_plus = int(out['MCP + Tạo Mới'].sum())
   n_nv = len(out)
-  tot_pct = round((tot_mcp + tot_mtd) / (CT * n_nv) * 100, 1) if n_nv and CT else 0.0
+  tot_pct = round(tot_plus / (CT * n_nv) * 100, 1) if n_nv and CT else 0.0
   tot = {
       'STT': '',
       'Tên NVBH': f'SS {_ss_name()} Total',
@@ -9999,7 +10003,8 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
       'CT': tot_ct,
       'MCP ON': tot_mcp,
       'Tạo Mới Ngày': tot_th,
-      'MTD': tot_mtd,
+      'Total Tạo Mới': tot_mtd,
+      'MCP + Tạo Mới': tot_plus,
       '% MTD': f'{tot_pct}%',
   }
   out = out.drop(columns=[c for c in out.columns if str(c).startswith('_')], errors='ignore')
@@ -10008,12 +10013,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
 
 
 def build_new_outlet_on_comments(df):
-  """Nhận xét 3 nhóm theo (MCP ON + MTD) so với CT (=60).
-
-  - Gap > 30% CT  → (MCP+MTD)/CT < 70%   🚨
-  - Gap ≤ 30% CT  → 70% ≤ (MCP+MTD)/CT < 100%  ⚠️
-  - Đã đạt (≥ CT) → (MCP+MTD) ≥ 60  ✅
-  """
+  """Nhận xét 3 nhóm — chỉ tên + số CH còn Gap; xếp Gap nhiều nhất trước."""
   if df is None or df.empty:
     return ''
   body = df[~df['Tên NVBH'].astype(str).str.contains('TỔNG|TOTAL', case=False, na=False)].copy()
@@ -10029,16 +10029,16 @@ def build_new_outlet_on_comments(df):
   g_warn, g_near, g_ok = [], [], []
   for _, r in body.iterrows():
     ten = str(r.get('Tên NVBH', '')).strip()
-    mcp_n = _num(r, 'MCP ON')
-    mtd = _num(r, 'MTD')
     ct = _num(r, 'CT') or 60
-    score = mcp_n + mtd
+    score = _num(r, 'MCP + Tạo Mới')
+    if score <= 0:
+      score = _num(r, 'MCP ON') + _num(r, 'Total Tạo Mới')
+    gap = max(0, int(ct - score))
     pct = score / ct * 100 if ct else 0
-    gap_pct = max(0.0, (ct - score) / ct * 100) if ct else 0
-    item = (ten, int(mcp_n), int(mtd), int(score), pct, gap_pct)
+    item = (ten, gap, pct, int(score))
     if score >= ct:
       g_ok.append(item)
-    elif gap_pct > 30:  # score/ct < 70%
+    elif gap > 0.3 * ct:  # gap > 30% CT
       g_warn.append(item)
     else:
       g_near.append(item)
@@ -10046,14 +10046,13 @@ def build_new_outlet_on_comments(df):
   def _fmt(lst, ok=False):
     if not lst:
       return '<i>Không có</i>'
-    parts = []
-    for it in sorted(lst, key=lambda x: -x[3])[:8]:
-      ten, mcp_n, mtd, score, pct, gap = it
-      if ok:
-        parts.append(f'{ten} ({int(score)}/60 · {pct:.0f}%)')
-      else:
-        parts.append(f'{ten} (MCP {mcp_n}+MTD {mtd}={int(score)}/60 · gap {gap:.0f}%)')
-    more = f' +{len(lst)-8} khác' if len(lst) > 8 else ''
+    # Gap nhiều nhất xếp trước
+    ordered = sorted(lst, key=lambda x: (-x[1], x[0]))
+    if ok:
+      parts = [f'{ten} ({score})' for ten, gap, pct, score in ordered[:10]]
+    else:
+      parts = [f'{ten} (còn {gap})' for ten, gap, pct, score in ordered[:10]]
+    more = f' +{len(lst)-10}' if len(lst) > 10 else ''
     return ', '.join(parts) + more
 
   html = [
@@ -10061,16 +10060,9 @@ def build_new_outlet_on_comments(df):
       'padding:10px 14px;margin:10px 0;font-size:13px;color:#1a202c;">',
       '<div style="font-weight:800;color:#c05621;margin-bottom:6px;">'
       '📝 NHẬN XÉT — TẠO MỚI KÊNH ON - CHUYÊN BEV</div>',
-      f'<div style="margin:4px 0;"><b style="color:#c53030;">🚨 Cảnh báo — Gap &gt; 30% CT '
-      f'((MCP+MTD)/CT &lt; 70%):</b> {_fmt(g_warn)}</div>',
-      f'<div style="margin:4px 0;"><b style="color:#dd6b20;">⚠️ Gần đạt — Gap ≤ 30% CT '
-      f'(70% ≤ (MCP+MTD)/CT &lt; 100%):</b> {_fmt(g_near)}</div>',
-      f'<div style="margin:4px 0;"><b style="color:#276749;">✅ Đã đạt / vượt CT '
-      f'((MCP+MTD) ≥ 60):</b> {_fmt(g_ok, ok=True)}</div>',
-      '<div style="margin-top:6px;font-size:11.5px;color:#718096;">'
-      'CT = 60/NV · % MTD = (MCP ON + MTD) / CT · '
-      'MCP ON từ Data_MCP (L1 ON + L2/L3 đủ ĐK) · '
-      'MTD từ DanhSachXetDuyetCuaHang (Thêm mới + Đã duyệt + L1 ON + L2/L3 đủ ĐK)</div>',
+      f'<div style="margin:3px 0;"><b style="color:#c53030;">🚨 Gap &gt; 30% CT:</b> {_fmt(g_warn)}</div>',
+      f'<div style="margin:3px 0;"><b style="color:#dd6b20;">⚠️ Gap ≤ 30% CT:</b> {_fmt(g_near)}</div>',
+      f'<div style="margin:3px 0;"><b style="color:#276749;">✅ Đã đạt CT:</b> {_fmt(g_ok, ok=True)}</div>',
       '</div>',
   ]
   return ''.join(html)
@@ -18813,7 +18805,7 @@ if _nav == '📊 BÁO CÁO KPI':
         f"⚡ Ngày BC: {report_date.strftime('%d/%m/%Y')} | "
         f"Lọc NV: {nv_label(filter_nv)} | "
         f"MCP ON từ Data_MCP · Tạo mới từ DanhSachXetDuyetCuaHang · "
-        f"CT = 60/NV · %MTD = (MCP ON + MTD)/CT"
+        f"CT = 60/NV · %MTD = (MCP + Tạo Mới)/CT"
     )
     if df_new_on is None or df_new_on.empty:
       st.warning(
@@ -18836,7 +18828,7 @@ if _nav == '📊 BÁO CÁO KPI':
       except Exception:
         _m_day = 0
       try:
-        _m_mtd = int(float(_tot.get('MTD', 0) or 0))
+        _m_mtd = int(float(_tot.get('Total Tạo Mới', _tot.get('MTD', 0)) or 0))
       except Exception:
         _m_mtd = 0
       _m_pct = str(_tot.get('% MTD', '0%'))
@@ -18845,7 +18837,7 @@ if _nav == '📊 BÁO CÁO KPI':
       _cards = [
           ('MCP ON / CT', f'{_m_mcp}/{_m_ct}', '#ebf8ff', '#2b6cb0'),
           ('Tạo Mới Ngày', str(_m_day), '#faf5ff', '#6b46c1'),
-          ('MTD', str(_m_mtd), '#fffff0', '#c05621'),
+          ('Total Tạo Mới', str(_m_mtd), '#fffff0', '#c05621'),
           ('% MTD', _m_pct, '#f0fff4', '#276749'),
       ]
       _card_html = [
@@ -18881,7 +18873,7 @@ if _nav == '📊 BÁO CÁO KPI':
       st.caption(
           'MCP ON = CH Kênh ON trên Data_MCP (L1 ON + L3 đủ ĐK). '
           'Tạo Mới Ngày / MTD = từ DanhSachXetDuyetCuaHang (Thêm mới + Đã duyệt + L1 ON + L3 đủ ĐK). '
-          'CT = 60/NV · % MTD = (MCP ON + MTD) / CT.'
+          'CT = 60/NV · MCP + Tạo Mới = MCP ON + Total Tạo Mới · % MTD = (MCP + Tạo Mới) / CT.'
       )
 
   elif selected_kpi == 'SUMMARY':
