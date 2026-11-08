@@ -8053,29 +8053,42 @@ def build_combo_matrix(
       pass
     return s
 
+  def _norm_thu_val(v):
+    """Chuẩn hoá Thứ: 2.0 → '2', 25.0 → '25'."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+      return ''
+    s = str(v).strip()
+    if s.endswith('.0'):
+      s = s[:-2]
+    try:
+      f = float(s.replace(',', ''))
+      if f == int(f):
+        s = str(int(f))
+    except Exception:
+      pass
+    return s
+
   def _filter_master_thu(master, f_thu):
     if master is None or getattr(master, 'empty', True) or not f_thu:
       return master
-    c_thu = find_col(master, ['Thứ', 'Thứ VT', 'Frequency', 'Tần suất', 'FREQ'])
+    m = master.copy()
+    c_thu = find_col(m, ['Thứ', 'Thứ VT', 'Frequency', 'Tần suất', 'FREQ'])
     if c_thu:
-      return filter_by_thu_multi(master, c_thu, list(f_thu))
+      m[c_thu] = m[c_thu].map(_norm_thu_val)
+      return filter_by_thu_multi(m, c_thu, list(f_thu))
     # Map Thứ từ MCP
     if mcp_df is None or mcp_df.empty:
       return master
-    c_ma_m = find_col(master, ['outlet_code', 'Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
+    c_ma_m = find_col(m, ['outlet_code', 'Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
     c_ma_p = find_col(mcp_df, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
     c_thu_p = find_col(mcp_df, ['Thứ', 'Thứ VT', 'Frequency', 'Tần suất'])
     if not (c_ma_m and c_ma_p and c_thu_p):
       return master
-    m = master.copy()
-    mcp_map = (
-        mcp_df[[c_ma_p, c_thu_p]].dropna()
-        .assign(**{'_ma': mcp_df[c_ma_p].map(_norm_code)})
-        .drop_duplicates('_ma')
-        .set_index('_ma')[c_thu_p]
-        .to_dict()
-    )
-    m['_thu'] = m[c_ma_m].map(_norm_code).map(mcp_map)
+    mcp_tmp = mcp_df[[c_ma_p, c_thu_p]].dropna().copy()
+    mcp_tmp['_ma'] = mcp_tmp[c_ma_p].map(_norm_code)
+    mcp_tmp['_thu'] = mcp_tmp[c_thu_p].map(_norm_thu_val)
+    mcp_map = mcp_tmp.drop_duplicates('_ma').set_index('_ma')['_thu'].to_dict()
+    m['_thu'] = m[c_ma_m].map(_norm_code).map(mcp_map).fillna('').map(_norm_thu_val)
     return filter_by_thu_multi(m, '_thu', list(f_thu))
 
   df_off_master = _filter_master_thu(df_off_master, f_thu_list)
@@ -8173,22 +8186,7 @@ def build_combo_matrix(
       return s.str.contains('ON', na=False) & ~s.str.contains('OFF', na=False)
     return s.str.contains('OFF', na=False) | (~s.str.contains('ON', na=False))
 
-  if combo_df is None or combo_df.empty:
-    off_mtd = off_ngay = on_mtd = on_ngay = {}
-    off_suat_mtd = off_suat_ngay = on_suat_mtd = on_suat_ngay = {}
-  else:
-    if 'channel' not in combo_df.columns:
-      combo_df = combo_df.copy()
-      combo_df['channel'] = 'OFF'
-    ch = combo_df['channel']
-    off_mtd, off_ngay, off_suat_mtd, off_suat_ngay = _maps_from_combo(
-        combo_df[_ch_mask(ch, 'OFF')], report_date
-    )
-    on_mtd, on_ngay, on_suat_mtd, on_suat_ngay = _maps_from_combo(
-        combo_df[_ch_mask(ch, 'ON')], report_date
-    )
-
-  # Outlet sets sau lọc Thứ
+  # Outlet sets sau lọc Thứ — nguồn chuẩn cho MTD CH / Chỉ Tiêu DS / TH DS
   def _outlet_set_by_nv(master):
     out = {}
     if master is None or master.empty:
@@ -8207,8 +8205,40 @@ def build_combo_matrix(
 
   off_outlets = _outlet_set_by_nv(df_off_master)
   on_outlets = _outlet_set_by_nv(df_on_master)
+  all_off_codes = set()
+  for s in off_outlets.values():
+    all_off_codes |= s
+  all_on_codes = set()
+  for s in on_outlets.values():
+    all_on_codes |= s
 
-  # TH Doanh Số = sum DS của CH trong DS Combo (MTD → ngày BC)
+  # MTD CH / Suất: chỉ CH đã mua ĐH Combo VÀ nằm trong DS Combo (sau lọc Thứ), unique Mã CH
+  if combo_df is None or combo_df.empty:
+    off_mtd = off_ngay = on_mtd = on_ngay = {}
+    off_suat_mtd = off_suat_ngay = on_suat_mtd = on_suat_ngay = {}
+  else:
+    if 'channel' not in combo_df.columns:
+      combo_df = combo_df.copy()
+      combo_df['channel'] = 'OFF'
+    # Chuẩn hoá mã CH trên combo_df để lọc theo DS
+    _ma_col = find_col(combo_df, [
+        'Mã CH', 'Outlet Code', 'Outlet_code', 'OutletCode', 'Mã KH', 'Poscode',
+    ])
+    if _ma_col:
+      combo_df = combo_df.copy()
+      combo_df['_ma_filt'] = combo_df[_ma_col].map(_norm_code)
+    ch = combo_df['channel']
+    off_sub = combo_df[_ch_mask(ch, 'OFF')].copy()
+    on_sub = combo_df[_ch_mask(ch, 'ON')].copy()
+    if _ma_col and all_off_codes:
+      off_sub = off_sub[off_sub['_ma_filt'].isin(all_off_codes)]
+    if _ma_col and all_on_codes:
+      on_sub = on_sub[on_sub['_ma_filt'].isin(all_on_codes)]
+    off_mtd, off_ngay, off_suat_mtd, off_suat_ngay = _maps_from_combo(off_sub, report_date)
+    on_mtd, on_ngay, on_suat_mtd, on_suat_ngay = _maps_from_combo(on_sub, report_date)
+
+  # TH Doanh Số = sum DS của CH trong DS Combo (sau lọc Thứ), MTD → ngày BC
+  # Không fallback gộp mọi NV (tránh sai khi lọc Thứ)
   off_th_map, on_th_map = {}, {}
   if df_mtd is not None and not df_mtd.empty:
     d_sales = df_mtd.copy()
@@ -8221,24 +8251,33 @@ def build_combo_matrix(
         'Giá trị sau CK', 'Thành tiền', 'Doanh số', 'Doanh Số', 'Tổng tiền',
         'TOTAL VALUE', 'Amount', 'Net Amount',
     ])
-    if c_nv_s and c_ma_s and c_ds:
-      d_sales['_nv'] = d_sales[c_nv_s].astype(str).str.strip()
+    if c_ma_s and c_ds:
       d_sales['_ma'] = d_sales[c_ma_s].map(_norm_code)
       d_sales['_ds'] = pd.to_numeric(d_sales[c_ds], errors='coerce').fillna(0.0)
+      if c_nv_s:
+        d_sales['_nv'] = d_sales[c_nv_s].astype(str).str.strip()
+      else:
+        d_sales['_nv'] = ''
+      # Build reverse map mã CH → NV từ master (ưu tiên master sau lọc Thứ)
+      off_code_to_nv = {}
       for nv, codes in off_outlets.items():
-        if not codes:
-          continue
-        mask = (d_sales['_nv'] == nv) & (d_sales['_ma'].isin(codes))
-        off_th_map[nv] = float(d_sales.loc[mask, '_ds'].sum())
-        if off_th_map[nv] == 0:
-          off_th_map[nv] = float(d_sales.loc[d_sales['_ma'].isin(codes), '_ds'].sum())
+        for c in codes:
+          off_code_to_nv[c] = nv
+      on_code_to_nv = {}
       for nv, codes in on_outlets.items():
-        if not codes:
-          continue
-        mask = (d_sales['_nv'] == nv) & (d_sales['_ma'].isin(codes))
-        on_th_map[nv] = float(d_sales.loc[mask, '_ds'].sum())
-        if on_th_map[nv] == 0:
-          on_th_map[nv] = float(d_sales.loc[d_sales['_ma'].isin(codes), '_ds'].sum())
+        for c in codes:
+          on_code_to_nv[c] = nv
+      # Gán NV theo master nếu tên NV trên đơn lệch
+      d_off = d_sales[d_sales['_ma'].isin(all_off_codes)].copy()
+      d_on = d_sales[d_sales['_ma'].isin(all_on_codes)].copy()
+      if not d_off.empty:
+        d_off['_nv_m'] = d_off['_ma'].map(off_code_to_nv)
+        d_off['_nv_use'] = d_off['_nv_m'].where(d_off['_nv_m'].notna(), d_off['_nv'])
+        off_th_map = d_off.groupby('_nv_use')['_ds'].sum().astype(float).to_dict()
+      if not d_on.empty:
+        d_on['_nv_m'] = d_on['_ma'].map(on_code_to_nv)
+        d_on['_nv_use'] = d_on['_nv_m'].where(d_on['_nv_m'].notna(), d_on['_nv'])
+        on_th_map = d_on.groupby('_nv_use')['_ds'].sum().astype(float).to_dict()
 
   # Chỉ Tiêu Doanh Số nhóm CH Combo
   off_ct_ds_map, on_ct_ds_map = {}, {}
