@@ -9704,6 +9704,204 @@ def render_html_table(df, freeze_cols=None):
 
 
 
+
+# ====================== BÁO CÁO TẠO MỚI CH KÊNH ON ======================
+ON_L3_TYPES = [
+    'quán café', 'quan cafe', 'quán cafe', 'quan café',
+    'trà chén', 'tra chen',
+    'quán cóc, xe đẩy', 'quan coc, xe day', 'quán cóc,xe đẩy', 'quán cóc xe đẩy',
+    'canteen trường học', 'canteen truong hoc',
+    'canteen bệnh viện', 'canteen benh vien',
+    'canteen kcn/cqxn',
+    'canteen quân đội, trại giam', 'canteen quan doi, trai giam',
+    'máy bán hàng tự động', 'may ban hang tu dong',
+    'game net',
+    'khu vui chơi giải trí, du lịch', 'khu vui choi giai tri, du lich',
+    'karaoke, bida..', 'karaoke, bida', 'karaoke,bida',
+    'clbtdtt/sân bóng/nhà thi đấu', 'clbtdtt/san bong/nha thi dau',
+    'trạm dừng chân', 'tram dung chan',
+    'điểm bán trong bến xe, nhà ga', 'diem ban trong ben xe, nha ga',
+    'đơn vị vận chuyển hành khách', 'don vi van chuyen hanh khach',
+    'quốc lộ-quán ăn,q.cơm bình dân', 'quoc lo-quan an,q.com binh dan',
+    'quốc lộ-quán ven đường/xe đẩy', 'quoc lo-quan ven duong/xe day',
+    'khác', 'khac',
+]
+
+
+def _norm_txt_on(s):
+  s = str(s or '').strip().lower()
+  for a, b in [
+      ('á','a'),('à','a'),('ả','a'),('ã','a'),('ạ','a'),
+      ('ă','a'),('ắ','a'),('ằ','a'),('ẳ','a'),('ẵ','a'),('ặ','a'),
+      ('â','a'),('ấ','a'),('ầ','a'),('ẩ','a'),('ẫ','a'),('ậ','a'),
+      ('é','e'),('è','e'),('ẻ','e'),('ẽ','e'),('ẹ','e'),
+      ('ê','e'),('ế','e'),('ề','e'),('ể','e'),('ễ','e'),('ệ','e'),
+      ('í','i'),('ì','i'),('ỉ','i'),('ĩ','i'),('ị','i'),
+      ('ó','o'),('ò','o'),('ỏ','o'),('õ','o'),('ọ','o'),
+      ('ô','o'),('ố','o'),('ồ','o'),('ổ','o'),('ỗ','o'),('ộ','o'),
+      ('ơ','o'),('ớ','o'),('ờ','o'),('ở','o'),('ỡ','o'),('ợ','o'),
+      ('ú','u'),('ù','u'),('ủ','u'),('ũ','u'),('ụ','u'),
+      ('ư','u'),('ứ','u'),('ừ','u'),('ử','u'),('ữ','u'),('ự','u'),
+      ('ý','y'),('ỳ','y'),('ỷ','y'),('ỹ','y'),('ỵ','y'),
+      ('đ','d'),
+  ]:
+    s = s.replace(a, b)
+  return re.sub(r'[\s,./\-_]+', '', s)
+
+
+_ON_L3_NORM = {_norm_txt_on(x) for x in ON_L3_TYPES}
+
+
+def _is_on_l3(val):
+  n = _norm_txt_on(val)
+  if not n or n in ('nan', 'none'):
+    return False
+  if n in _ON_L3_NORM:
+    return True
+  keys = (
+      'quancafe', 'trachen', 'quancoc', 'xeday',
+      'canteen', 'maybanhang', 'gamenet', 'khuvuichoi',
+      'karaoke', 'bida', 'clbtdtt', 'sanbong', 'tramdungchan',
+      'benxe', 'nhaga', 'vanchuyenhanhkhach', 'quoclo', 'khac',
+  )
+  return any(k in n for k in keys)
+
+
+def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
+  """Báo cáo Tạo Mới CH Kênh ON.
+
+  L1 = Kênh On Premise · L3 thuộc danh mục ON · Tạo mới = Created_date trong tháng → ngày BC.
+  """
+  cols = ['STT', 'Tên NVBH', 'MCP ON (L3 ĐK)', 'Tạo Mới MTD', '% Tạo Mới']
+  empty = pd.DataFrame(columns=cols)
+  if mcp_df is None or mcp_df.empty or report_date is None:
+    return empty
+
+  mcp = mcp_df.copy()
+  c_nv = find_col(mcp, ['SM name', 'SM Name', 'Tên NVBH', 'Nhân viên'])
+  c_l1 = find_col(mcp, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel', 'Business Type L1'])
+  c_l3 = find_col(mcp, ['L3', 'x_msc_business_type_l3', 'Business Type L3', 'Type Outlet L3'])
+  c_created = find_col(mcp, ['Created_date', 'Created Date', 'Ngày tạo', 'Create Date', 'created_date'])
+  c_ma = find_col(mcp, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
+  if not c_nv or not c_l1:
+    return empty
+
+  mcp['_nv'] = mcp[c_nv].astype(str).str.strip()
+  mcp = mcp[~mcp['_nv'].str.contains('vacant', case=False, na=False)]
+  mcp = mcp[mcp['_nv'].str.lower() != 'nan']
+  mcp = mcp[mcp[c_l1].astype(str).str.contains('On', case=False, na=False)]
+  if mcp.empty:
+    return empty
+  if c_l3:
+    mcp = mcp[mcp[c_l3].map(_is_on_l3)]
+  if mcp.empty:
+    return empty
+  if nv_selected(filter_nv):
+    mcp = filter_df_by_nv(mcp, '_nv', filter_nv)
+
+  rd = report_date.date() if hasattr(report_date, 'date') else report_date
+  start = date(rd.year, rd.month, 1)
+  mcp['_new'] = False
+  if c_created:
+    cdt = pd.to_datetime(mcp[c_created], errors='coerce')
+    mcp['_cd'] = cdt.dt.date
+    mcp['_new'] = mcp['_cd'].notna() & (mcp['_cd'] >= start) & (mcp['_cd'] <= rd)
+
+  rows = []
+  for nv, g in mcp.groupby('_nv', sort=True):
+    mcp_n = int(g[c_ma].nunique()) if c_ma else len(g)
+    new_n = int(g.loc[g['_new'], c_ma].nunique()) if c_ma else int(g['_new'].sum())
+    pct = round(new_n / mcp_n * 100, 1) if mcp_n else 0.0
+    rows.append({
+        'Tên NVBH': nv,
+        'MCP ON (L3 ĐK)': mcp_n,
+        'Tạo Mới MTD': new_n,
+        '% Tạo Mới': f'{pct}%',
+        '_new': new_n,
+    })
+  if not rows:
+    return empty
+  out = pd.DataFrame(rows).sort_values('_new', ascending=False).reset_index(drop=True)
+  out.insert(0, 'STT', range(1, len(out) + 1))
+  tot_mcp = int(out['MCP ON (L3 ĐK)'].sum())
+  tot_new = int(out['Tạo Mới MTD'].sum())
+  tot_pct = round(tot_new / tot_mcp * 100, 1) if tot_mcp else 0.0
+  tot = {
+      'STT': '', 'Tên NVBH': f'SS {_ss_name()} Total',
+      'MCP ON (L3 ĐK)': tot_mcp, 'Tạo Mới MTD': tot_new,
+      '% Tạo Mới': f'{tot_pct}%',
+  }
+  out = out.drop(columns=[c for c in out.columns if str(c).startswith('_')], errors='ignore')
+  out = pd.concat([out, pd.DataFrame([tot])], ignore_index=True)
+  return out[cols]
+
+
+def render_new_outlet_on_html(df, title='BÁO CÁO TẠO MỚI CH KÊNH ON'):
+  if df is None or df.empty:
+    return f'<p style="color:#718096;">Không có dữ liệu — {title}</p>'
+  cols = [c for c in df.columns if not str(c).startswith('_')]
+  th = (
+      'background-color:#1a365d !important;color:#ffffff !important;'
+      'font-weight:800 !important;text-align:center !important;'
+      'border:1px solid #2b6cb0 !important;padding:6px 8px;font-size:11px;white-space:nowrap;'
+  )
+  td = (
+      'border:1px solid #bce2f5 !important;padding:5px 6px;font-size:11px;'
+      'text-align:center !important;white-space:nowrap;'
+  )
+  html = [
+      f'<h4 style="color:#034ea2;font-weight:800;margin:16px 0 6px 0;text-align:center;">{title}</h4>',
+      '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:12px;">',
+      '<table class="custom-kpi-table" style="border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;">',
+      '<thead><tr>',
+  ]
+  for c in cols:
+    sticky = ''
+    if c == 'STT':
+      sticky = 'position:sticky;left:0;z-index:3;'
+    elif c == 'Tên NVBH':
+      sticky = 'position:sticky;left:42px;z-index:3;'
+    html.append(f'<th style="{th}{sticky}">{c}</th>')
+  html.append('</tr></thead><tbody>')
+  for pos, (_, row) in enumerate(df.iterrows()):
+    is_tot = 'TOTAL' in str(row.get('Tên NVBH', '')).upper() or 'TỔNG' in str(row.get('Tên NVBH', '')).upper()
+    bg = '#1a365d' if is_tot else ('#e6f4fc' if pos % 2 == 0 else '#ffffff')
+    fg = '#ffffff' if is_tot else '#1a202c'
+    html.append('<tr' + (' class="row-total"' if is_tot else '') + '>')
+    for c in cols:
+      val = row.get(c, '')
+      if pd.isna(val):
+        val = ''
+      sticky = ''
+      if c == 'STT':
+        sticky = f'position:sticky;left:0;z-index:1;background-color:{bg} !important;'
+      elif c == 'Tên NVBH':
+        sticky = f'position:sticky;left:42px;z-index:1;background-color:{bg} !important;text-align:left !important;font-weight:600;'
+      if str(c).startswith('%'):
+        try:
+          v_pct = float(str(val).replace('%', '').replace(',', '.').strip() or 0)
+        except Exception:
+          v_pct = 0.0
+        if v_pct < 50:
+          cls, style_extra = 'pct-red', 'background-color:#fed7d7 !important;color:#742a2a !important;font-weight:800 !important;'
+        elif v_pct < 75:
+          cls, style_extra = 'pct-orange', 'background-color:#feebc8 !important;color:#c05621 !important;font-weight:800 !important;'
+        elif v_pct < 90:
+          cls, style_extra = 'pct-yellow', 'background-color:#fefcbf !important;color:#744210 !important;font-weight:800 !important;'
+        else:
+          cls, style_extra = 'pct-green', 'background-color:#c6f6d5 !important;color:#22543d !important;font-weight:800 !important;'
+        html.append(f'<td data-colored="1" class="{cls}" style="{td}{sticky}{style_extra}">{val}</td>')
+      else:
+        cls = 'row-total-cell' if is_tot else ''
+        html.append(
+            f'<td class="{cls}" style="{td}background-color:{bg} !important;color:{fg} !important;'
+            f'font-weight:{"900" if is_tot else "600"};{sticky}">{val}</td>'
+        )
+    html.append('</tr>')
+  html.append('</tbody></table></div>')
+  return ''.join(html)
+
+
 # ====================== BÁO CÁO MBS CAT (6 NHÓM) ======================
 
 def check_mbs_mission(df_outlet, member_type, col_loai='_loai', col_actual='_actual'):
@@ -18059,14 +18257,15 @@ with f2:
       # ===== Báo cáo giữ logic Tháng 9 =====
       '9. BÁO CÁO ĐH COMBO': 'COMBO',
       '10. BÁO CÁO TỔNG HỢP': 'SUMMARY',
-      '11. BÁO CÁO LỊCH VIẾNG THĂM': 'VISIT',
-      '12. BÁO CÁO MBS CAT': 'MBS_CAT',
-      '13. BÁO CÁO MBS BRAND': 'MBS_BRAND',
-      '14. BÁO CÁO HIỆU SUẤT BÁN HÀNG': 'PERFORMANCE',
-      '15. BÁO CÁO TRƯNG BÀY': 'DISPLAY',
-      '16. KẾ HOẠCH TÁC CHIẾN TRÀ BÚP NON T10': 'TEA_BATTLE',
-      '17. BÁO CÁO PERFORMANCE': 'PERF_CAT',
-      '18. WEEKLY PREVIEW - MCP / ASO / %COV': 'WEEKLY_PREVIEW',
+      '11. BÁO CÁO TẠO MỚI CH KÊNH ON': 'NEW_OUTLET_ON',
+      '12. BÁO CÁO LỊCH VIẾNG THĂM': 'VISIT',
+      '13. BÁO CÁO MBS CAT': 'MBS_CAT',
+      '14. BÁO CÁO MBS BRAND': 'MBS_BRAND',
+      '15. BÁO CÁO HIỆU SUẤT BÁN HÀNG': 'PERFORMANCE',
+      '16. BÁO CÁO TRƯNG BÀY': 'DISPLAY',
+      '17. KẾ HOẠCH TÁC CHIẾN TRÀ BÚP NON T10': 'TEA_BATTLE',
+      '18. BÁO CÁO PERFORMANCE': 'PERF_CAT',
+      '19. WEEKLY PREVIEW - MCP / ASO / %COV': 'WEEKLY_PREVIEW',
   }
   if _cfg.get('no_mbs_cat') or _cfg.get('mbs_brand_name') or _cfg.get('aso_pl') or _cfg.get('aso_xot'):
     # T11: bỏ MBS Cat, MBS Brand đổi tên (Hội Viên Tết 2027), thêm ASO Trà Phúc Long ở số 9
@@ -18077,10 +18276,15 @@ with f2:
         _items.append((_cfg['aso_pl']['name'], 'ASO_PL'))
       if _code == 'COMBO' and _cfg.get('aso_xot'):
         _items.append((_cfg['aso_xot']['name'], 'ASO_XOT'))
+      if _code == 'COMBO':
+        # Đặt Báo cáo Tạo Mới CH Kênh ON ngay trước ĐH Combo → thành số 11 (T11)
+        _items.append(('BÁO CÁO TẠO MỚI CH KÊNH ON', 'NEW_OUTLET_ON'))
+      if _code == 'NEW_OUTLET_ON':
+        continue  # đã chèn trước COMBO
       if _code == 'MBS_CAT' and _cfg.get('no_mbs_cat'):
         continue
       if _code == 'MBS_BRAND' and _cfg.get('mbs_brand_name'):
-        _lab = f"13. BÁO CÁO {_cfg['mbs_brand_name']}"
+        _lab = f"BÁO CÁO {_cfg['mbs_brand_name']}"
       _items.append((re.sub(r'^\d+\.\s*', '', _lab), _code))
     kpi_map = {f'{i}. {lab}': code for i, (lab, code) in enumerate(_items, 1)}
   selected_name = st.selectbox(
