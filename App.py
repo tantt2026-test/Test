@@ -9985,7 +9985,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
         '_gap': max(0, CT - mcp_plus),
     })
 
-  out = pd.DataFrame(rows).sort_values('_score', ascending=False).reset_index(drop=True)
+  out = pd.DataFrame(rows).sort_values('_pct', ascending=True).reset_index(drop=True)
   out.insert(0, 'STT', range(1, len(out) + 1))
 
   tot_all_on = int(out['Total MCP ON'].sum())
