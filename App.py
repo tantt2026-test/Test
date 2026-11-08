@@ -9798,7 +9798,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   - CT = 60 / NV
   - % MTD = (MCP ON + Tạo Mới MTD) / CT
   """
-  cols = ['STT', 'Tên NVBH', 'CT', 'MCP ON', 'Tạo Mới Ngày', 'MTD', '% MTD']
+  cols = ['STT', 'Tên NVBH', 'Total MCP ON', 'CT', 'MCP ON', 'Tạo Mới Ngày', 'MTD', '% MTD']
   empty = pd.DataFrame(columns=cols)
   if report_date is None:
     return empty
@@ -9808,26 +9808,41 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   CT = 60
 
   # ========== 1) MCP ON từ Data_MCP ==========
-  mcp_count = {}  # nv -> unique outlet count
+  # total_on_count: chỉ L1 = ON (không xét L2/L3) — không dùng tính %MTD
+  # mcp_count: L1 ON + L2/L3 đủ ĐK — dùng tính %MTD
+  mcp_count = {}
+  total_on_count = {}
   nv_all = set()
   if mcp_df is not None and not mcp_df.empty:
     mcp = mcp_df.copy()
     c_nv = find_col(mcp, ['SM name', 'SM Name', 'Tên NVBH', 'Nhân viên'])
     c_l1 = find_col(mcp, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel', 'Business Type L1'])
     c_l3 = find_col(mcp, ['L3', 'x_msc_business_type_l3', 'Business Type L3', 'Type Outlet L3'])
+    c_l2 = find_col(mcp, ['L2', 'x_msc_business_type_l2', 'Business Type L2'])
     c_ma = find_col(mcp, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
     if c_nv and c_l1:
       mcp['_nv'] = mcp[c_nv].astype(str).str.strip()
       mcp = mcp[~mcp['_nv'].str.contains('vacant', case=False, na=False)]
       mcp = mcp[~mcp['_nv'].str.lower().isin(['nan', 'none', ''])]
-      mcp = mcp[mcp[c_l1].astype(str).str.contains('On', case=False, na=False)]
-      if c_l3 is not None:
-        mcp = mcp[mcp[c_l3].map(_is_on_l3)]
+      mcp_on = mcp[mcp[c_l1].astype(str).str.contains('On', case=False, na=False)].copy()
       if nv_selected(filter_nv):
-        mcp = filter_df_by_nv(mcp, '_nv', filter_nv)
-      for nv, g in mcp.groupby('_nv'):
-        n = int(g[c_ma].nunique()) if c_ma else len(g)
-        mcp_count[nv] = n
+        mcp_on = filter_df_by_nv(mcp_on, '_nv', filter_nv)
+      # Total MCP ON — chỉ L1 ON
+      for nv, g in mcp_on.groupby('_nv'):
+        total_on_count[nv] = int(g[c_ma].nunique()) if c_ma else len(g)
+        nv_all.add(nv)
+      # MCP ON (L2/L3 đủ ĐK)
+      mcp_f = mcp_on.copy()
+      if c_l3 is not None or c_l2 is not None:
+        mcp_f = mcp_f[mcp_f.apply(
+            lambda r: _pass_on_l2_l3(
+                r[c_l2] if c_l2 else None,
+                r[c_l3] if c_l3 else None,
+            ),
+            axis=1,
+        )]
+      for nv, g in mcp_f.groupby('_nv'):
+        mcp_count[nv] = int(g[c_ma].nunique()) if c_ma else len(g)
         nv_all.add(nv)
 
   # ========== 2) Tạo mới từ DanhSachXetDuyetCuaHang ==========
@@ -9948,12 +9963,14 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   rows = []
   for nv in sorted(nv_all):
     mcp_n = int(mcp_count.get(nv, 0))
+    total_on = int(total_on_count.get(nv, 0))
     mtd = int(mtd_count.get(nv, 0))
     th_day = int(day_count.get(nv, 0))
-    # % MTD = (MCP ON + Tạo Mới MTD) / CT
+    # % MTD = (MCP ON + MTD) / CT  — KHÔNG dùng Total MCP ON
     pct = round((mcp_n + mtd) / CT * 100, 1) if CT else 0.0
     rows.append({
         'Tên NVBH': nv,
+        'Total MCP ON': total_on,
         'CT': CT,
         'MCP ON': mcp_n,
         'Tạo Mới Ngày': th_day,
@@ -9968,6 +9985,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   out = pd.DataFrame(rows).sort_values('_score', ascending=False).reset_index(drop=True)
   out.insert(0, 'STT', range(1, len(out) + 1))
 
+  tot_all_on = int(out['Total MCP ON'].sum())
   tot_mcp = int(out['MCP ON'].sum())
   tot_ct = int(out['CT'].sum())
   tot_th = int(out['Tạo Mới Ngày'].sum())
@@ -9977,6 +9995,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   tot = {
       'STT': '',
       'Tên NVBH': f'SS {_ss_name()} Total',
+      'Total MCP ON': tot_all_on,
       'CT': tot_ct,
       'MCP ON': tot_mcp,
       'Tạo Mới Ngày': tot_th,
