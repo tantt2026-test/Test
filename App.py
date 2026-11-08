@@ -18352,6 +18352,49 @@ if _nav == '📊 BÁO CÁO KPI':
         """,
         unsafe_allow_html=True,
     )
+  elif selected_kpi == 'NEW_OUTLET_ON':
+    set_color_moc_for_kpi('ASO_ALL')
+    try:
+      df_new_on = build_new_outlet_on_report(mcp, report_date, filter_nv=filter_nv)
+    except Exception as _e_new:
+      st.error(f'Lỗi Báo Cáo Tạo Mới CH Kênh ON: {_e_new}')
+      st.exception(_e_new)
+      df_new_on = pd.DataFrame()
+    st.markdown(
+        f'<h3 style="color:#034ea2;font-weight:800;margin-bottom:4px;'
+        f'font-size:16px;text-align:center;">BÁO CÁO TẠO MỚI CH KÊNH ON'
+        f' — THÁNG {report_date.strftime("%m/%Y")}</h3>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"⚡ Ngày BC: {report_date.strftime('%d/%m/%Y')} | "
+        f"Lọc NV: {nv_label(filter_nv)} | "
+        f"L1 = Kênh On Premise · L3 thuộc danh mục loại hình ON · "
+        f"Tạo mới = Created_date trong tháng đến ngày BC"
+    )
+    if df_new_on is None or df_new_on.empty:
+      st.warning('Không có CH Kênh ON (L3 đủ ĐK) trên Data_MCP.')
+    else:
+      st.markdown(
+          render_new_outlet_on_html(
+              df_new_on,
+              title=f'TẠO MỚI CH KÊNH ON — {report_date.strftime("%m/%Y")}',
+          ),
+          unsafe_allow_html=True,
+      )
+      st.download_button(
+          '📥 Tải CSV Tạo Mới CH Kênh ON',
+          data=df_new_on.to_csv(index=False).encode('utf-8-sig'),
+          file_name=f'TaoMoi_CH_KenhON_{report_date.strftime("%Y%m%d")}.csv',
+          mime='text/csv',
+          key='dl_new_outlet_on',
+      )
+      st.caption(
+          'MCP ON (L3 ĐK) = tổng CH Kênh ON có L3 thuộc danh mục (Quán Café, Trà chén, '
+          'Quán cóc/xe đẩy, Canteen, Game Net, Karaoke/Bida, …). '
+          'Tạo Mới MTD = CH có Created_date từ đầu tháng → ngày BC.'
+      )
+
   elif selected_kpi == 'SUMMARY':
     set_color_moc_for_kpi('SUMMARY')
     saved_sum_thu = st.query_params.get('sum_thu', '')
@@ -20351,7 +20394,7 @@ if _nav == '📊 BÁO CÁO KPI':
   elif selected_kpi == 'DISPLAY':
     st.markdown(
         '<h3 style="text-align:center;color:#1a365d;font-weight:800;">'
-        '15. BÁO CÁO TRƯNG BÀY</h3>',
+        'BÁO CÁO TRƯNG BÀY</h3>',
         unsafe_allow_html=True,
     )
     df_disp = load_display_data()
@@ -20637,7 +20680,7 @@ if _nav == '📊 BÁO CÁO KPI':
   elif selected_kpi == 'PERF_CAT':
     st.markdown(
         '<h3 style="text-align:center;color:#1a365d;font-weight:800;">'
-        '17. BÁO CÁO PERFORMANCE (THEO NGÀNH HÀNG)</h3>',
+        'BÁO CÁO PERFORMANCE (THEO NGÀNH HÀNG)</h3>',
         unsafe_allow_html=True,
     )
     df_perf = load_perf_sku_data()
