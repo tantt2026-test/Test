@@ -9776,7 +9776,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   - CT = 60 / NV
   - % MTD = (MCP ON + Tạo Mới MTD) / CT
   """
-  cols = ['STT', 'Tên NVBH', 'MCP ON (L3 ĐK)', 'CT', 'TH ngày', 'Tạo Mới MTD', '% MTD']
+  cols = ['STT', 'Tên NVBH', 'CT', 'MCP ON', 'Tạo Mới Ngày', 'MTD', '% MTD']
   empty = pd.DataFrame(columns=cols)
   if report_date is None:
     return empty
@@ -9913,10 +9913,10 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
     pct = round((mcp_n + mtd) / CT * 100, 1) if CT else 0.0
     rows.append({
         'Tên NVBH': nv,
-        'MCP ON (L3 ĐK)': mcp_n,
         'CT': CT,
-        'TH ngày': th_day,
-        'Tạo Mới MTD': mtd,
+        'MCP ON': mcp_n,
+        'Tạo Mới Ngày': th_day,
+        'MTD': mtd,
         '% MTD': f'{pct}%',
         '_pct': pct,
         '_mtd': mtd,
@@ -9927,19 +9927,19 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   out = pd.DataFrame(rows).sort_values('_score', ascending=False).reset_index(drop=True)
   out.insert(0, 'STT', range(1, len(out) + 1))
 
-  tot_mcp = int(out['MCP ON (L3 ĐK)'].sum())
+  tot_mcp = int(out['MCP ON'].sum())
   tot_ct = int(out['CT'].sum())
-  tot_th = int(out['TH ngày'].sum())
-  tot_mtd = int(out['Tạo Mới MTD'].sum())
+  tot_th = int(out['Tạo Mới Ngày'].sum())
+  tot_mtd = int(out['MTD'].sum())
   n_nv = len(out)
   tot_pct = round((tot_mcp + tot_mtd) / (CT * n_nv) * 100, 1) if n_nv and CT else 0.0
   tot = {
       'STT': '',
       'Tên NVBH': f'SS {_ss_name()} Total',
-      'MCP ON (L3 ĐK)': tot_mcp,
       'CT': tot_ct,
-      'TH ngày': tot_th,
-      'Tạo Mới MTD': tot_mtd,
+      'MCP ON': tot_mcp,
+      'Tạo Mới Ngày': tot_th,
+      'MTD': tot_mtd,
       '% MTD': f'{tot_pct}%',
   }
   out = out.drop(columns=[c for c in out.columns if str(c).startswith('_')], errors='ignore')
@@ -9962,7 +9962,7 @@ def build_new_outlet_on_comments(df):
 
   def _mtd(r):
     try:
-      return int(r.get('Tạo Mới MTD', 0) or 0)
+      return int(r.get('MTD', 0) or 0)
     except Exception:
       return 0
 
@@ -18740,14 +18740,57 @@ if _nav == '📊 BÁO CÁO KPI':
     st.caption(
         f"⚡ Ngày BC: {report_date.strftime('%d/%m/%Y')} | "
         f"Lọc NV: {nv_label(filter_nv)} | "
-        f"MCP ON từ Data_MCP · Tạo mới từ DanhSachXetDuyetCuaHang · CT = 60/NV · %MTD = (MCP ON + MTD)/CT"
+        f"MCP ON từ Data_MCP · Tạo mới từ DanhSachXetDuyetCuaHang · "
+        f"CT = 60/NV · %MTD = (MCP ON + MTD)/CT"
     )
     if df_new_on is None or df_new_on.empty:
       st.warning(
           'Không có dữ liệu Tạo Mới CH Kênh ON. '
-          'Kiểm tra file **DanhSachXetDuyetCuaHang.xlsx** trong thư mục data tháng trên GitHub.'
+          'Kiểm tra **Data_MCP.xlsx** và **DanhSachXetDuyetCuaHang.xlsx** trên GitHub.'
       )
     else:
+      # Metric cards từ dòng Tổng Cộng
+      _tot = df_new_on.iloc[-1]
+      try:
+        _m_mcp = int(float(_tot.get('MCP ON', 0) or 0))
+      except Exception:
+        _m_mcp = 0
+      try:
+        _m_ct = int(float(_tot.get('CT', 0) or 0))
+      except Exception:
+        _m_ct = 0
+      try:
+        _m_day = int(float(_tot.get('Tạo Mới Ngày', 0) or 0))
+      except Exception:
+        _m_day = 0
+      try:
+        _m_mtd = int(float(_tot.get('MTD', 0) or 0))
+      except Exception:
+        _m_mtd = 0
+      _m_pct = str(_tot.get('% MTD', '0%'))
+      if _m_pct and not str(_m_pct).endswith('%'):
+        _m_pct = f'{_m_pct}%'
+      _cards = [
+          ('MCP ON / CT', f'{_m_mcp}/{_m_ct}', '#ebf8ff', '#2b6cb0'),
+          ('Tạo Mới Ngày', str(_m_day), '#faf5ff', '#6b46c1'),
+          ('MTD', str(_m_mtd), '#fffff0', '#c05621'),
+          ('% MTD', _m_pct, '#f0fff4', '#276749'),
+      ]
+      _card_html = [
+          '<div style="display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 12px 0;">'
+      ]
+      for _lab, _val, _bg, _fg in _cards:
+        _card_html.append(
+            f'<div style="flex:1 1 140px;min-width:120px;background:{_bg};'
+            f'border:1px solid {_fg}33;border-radius:10px;padding:10px 12px;'
+            f'text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.06);">'
+            f'<div style="font-size:11px;font-weight:700;color:{_fg};opacity:.9;margin-bottom:4px;">{_lab}</div>'
+            f'<div style="font-size:18px;font-weight:900;color:{_fg};">{_val}</div>'
+            f'</div>'
+        )
+      _card_html.append('</div>')
+      st.markdown(''.join(_card_html), unsafe_allow_html=True)
+
       st.markdown(
           render_new_outlet_on_html(
               df_new_on,
@@ -18764,9 +18807,9 @@ if _nav == '📊 BÁO CÁO KPI':
           key='dl_new_outlet_on',
       )
       st.caption(
-          'MCP ON (L3 ĐK) = CH Kênh ON trên Data_MCP (L1 ON + L3 đủ ĐK). '
-          'TH ngày / Tạo Mới MTD = từ DanhSachXetDuyetCuaHang (Thêm mới + Đã duyệt + L1 ON + L3 đủ ĐK). '
-          'CT = 60/NV · % MTD = (MCP ON + Tạo Mới MTD) / CT.'
+          'MCP ON = CH Kênh ON trên Data_MCP (L1 ON + L3 đủ ĐK). '
+          'Tạo Mới Ngày / MTD = từ DanhSachXetDuyetCuaHang (Thêm mới + Đã duyệt + L1 ON + L3 đủ ĐK). '
+          'CT = 60/NV · % MTD = (MCP ON + MTD) / CT.'
       )
 
   elif selected_kpi == 'SUMMARY':
