@@ -918,6 +918,7 @@ def _combo_from_dms(raw):
       'SS Name': 'SS', 'SM Name': 'Tên NV', 'OUTLET_CD': 'outlet_code', 'OUTLET': 'outlet_name',
       'Địa chỉ': 'Địa Chỉ', 'FREQ': 'Tần suất', 'VIP Type': 'VIP Type',
       'Business type L2': 'L2', 'TRẠNG THÁI THAM GIA': 'Trạng thái tham gia',
+      'Poscode': 'Poscode', 'POS_CODE': 'Poscode', 'SM UID': 'SM UID',
   }
   keep = [c for c in ren if c in d.columns] + [c for c in ['Thứ'] if c in d.columns]
   d['_prog'] = d['PROMOTION_NAME'].map(_combo_prog_label) if 'PROMOTION_NAME' in d.columns else 'Combo'
@@ -926,7 +927,7 @@ def _combo_from_dms(raw):
   progs = list(dict.fromkeys(d['_prog']))
   flag = d.assign(_v='✓').pivot_table(index='outlet_code', columns='_prog', values='_v', aggfunc='first')
   out = info.join(flag[[p for p in progs if p in flag.columns]]).reset_index()
-  front = ['Subregion', 'ASM', 'DMS_LOC', 'NPP', 'SS', 'Tên NV', 'outlet_code', 'outlet_name', 'Địa Chỉ', 'Thứ']
+  front = ['Subregion', 'ASM', 'DMS_LOC', 'NPP', 'SS', 'Tên NV', 'Poscode', 'outlet_code', 'outlet_name', 'Địa Chỉ', 'Thứ']
   cols = [c for c in front if c in out.columns] + [c for c in out.columns if c not in front]
   return out[cols]
 
@@ -3858,7 +3859,7 @@ def _gap_and_bq_day(target, mtd, remain_days, as_int=True):
 
 
 @st.cache_data(ttl=600)
-def _load_weekly_sales_m(month_key):
+def _load_weekly_sales_m(month_key):  # data-2 / data-2-3.xlsx — RR lịch sử
   """Load file bán hàng lịch sử cho Weekly Preview (data-2 / WeeklyPreview_Sales)."""
   preferred = [
       'data-2-2.xlsx', 'data-2-2.xls',
@@ -8279,21 +8280,27 @@ def build_combo_matrix(
         d_on['_nv_use'] = d_on['_nv_m'].where(d_on['_nv_m'].notna(), d_on['_nv'])
         on_th_map = d_on.groupby('_nv_use')['_ds'].sum().astype(float).to_dict()
 
-  # Chỉ Tiêu Doanh Số nhóm CH Combo
-  # Logic: CH thuộc DS Combo OFF/ON (sau lọc Thứ)
-  #   → map NV → TARGETACTUAL BY STD SKU -BY SM (TARGET SO tháng BC)
-  #   → chia theo tỷ lệ số CH OFF/ON trong DS Combo
+  # Chỉ Tiêu Doanh Số nhóm CH Combo — nguồn data-2 (OUTLET_CODE)
+  # CT DS = TB DS/tháng (các tháng trước tháng BC) của đúng CH thuộc DS Combo OFF/ON
   off_ct_ds_map, on_ct_ds_map = {}, {}
-  _tgt_by_nv = {}  # Tên NV → tổng TARGET SO tháng BC
+  _tgt_by_nv = {}
+  _tgt_by_pos = {}
+  _pos_by_nv = {}
+  _USE_DATA2_FOR_CT = True
+  # data-2: CT DS = TB DS/tháng của CH trong DS Combo (các tháng trước tháng BC)
   try:
-    _perf = load_perf_sku_data()
+    _ws = load_weekly_sales()
   except Exception:
+    _ws = pd.DataFrame()
+  # data-2 CT DS (OUTLET_CODE × Sales Before Discount)
+  if False and _ws is not None:  # legacy TARGETACTUAL block disabled
     _perf = pd.DataFrame()
-  if _perf is not None and not getattr(_perf, 'empty', True):
+  if False:
     c_month = find_col(_perf, ['MONTH', 'Month', 'Tháng'])
     c_tg = find_col(_perf, ['TARGET SO', 'Target SO', 'TARGET', 'Target', 'Chỉ tiêu'])
     c_pnv = find_col(_perf, ['SM NAME', 'SM_NAME', 'Tên NVBH', 'SM name', 'Nhân viên'])
-    if c_month and c_tg and c_pnv:
+    c_pos = find_col(_perf, ['POS_CODE', 'POS CODE', 'Poscode', 'SM pos', 'SM POS'])
+    if c_month and c_tg and (c_pnv or c_pos):
       p = _perf.copy()
       # Tháng BC: MM/YYYY hoặc biến thể
       _mk = f'{int(rd.month):02d}/{int(rd.year)}'
@@ -8329,30 +8336,23 @@ def build_combo_matrix(
       p['_mk'] = p[c_month].map(_norm_month_cell)
       p = p[p['_mk'] == _mk]
       p['_tg'] = pd.to_numeric(p[c_tg], errors='coerce').fillna(0.0)
-      p['_nv'] = p[c_pnv].astype(str).str.strip()
-      p = p[~p['_nv'].str.lower().isin(['nan', 'none', ''])]
-      # Sum TARGET SO theo NV
-      _tgt_by_nv = p.groupby('_nv')['_tg'].sum().astype(float).to_dict()
-      # Thêm key chuẩn hoá khoảng trắng
-      _extra = {}
-      for _k, _v in list(_tgt_by_nv.items()):
-        _nk = re.sub(r'\s+', ' ', str(_k).strip())
-        if _nk != _k:
-          _extra[_nk] = _extra.get(_nk, 0) + float(_v)
-      _tgt_by_nv.update(_extra)
+      # Sum TARGET SO theo NV (SM NAME)
+      if c_pnv:
+        p['_nv'] = p[c_pnv].astype(str).str.strip()
+        _pnv = p[~p['_nv'].str.lower().isin(['nan', 'none', ''])]
+        _tgt_by_nv = _pnv.groupby('_nv')['_tg'].sum().astype(float).to_dict()
+        for _k, _v in list(_tgt_by_nv.items()):
+          _nk = re.sub(r'\s+', ' ', str(_k).strip())
+          if _nk != _k:
+            _tgt_by_nv[_nk] = _tgt_by_nv.get(_nk, 0) + float(_v)
+      # Sum TARGET SO theo POS_CODE (map ổn định với master Combo.Poscode)
+      if c_pos:
+        p['_pos'] = p[c_pos].astype(str).str.strip()
+        _ppos = p[~p['_pos'].str.lower().isin(['nan', 'none', ''])]
+        _tgt_by_pos = _ppos.groupby('_pos')['_tg'].sum().astype(float).to_dict()
 
   def _lookup_tgt(nv):
-    if nv in _tgt_by_nv:
-      return float(_tgt_by_nv[nv] or 0)
-    nk = re.sub(r'\s+', ' ', str(nv).strip())
-    if nk in _tgt_by_nv:
-      return float(_tgt_by_nv[nk] or 0)
-    # fuzzy: contains
-    nv_l = nk.lower()
-    for k, v in _tgt_by_nv.items():
-      if str(k).strip().lower() == nv_l:
-        return float(v or 0)
-    return 0.0
+    return 0.0  # deprecated — CT DS lấy từ data-2 bên dưới
 
   all_nv_for_ct = (
       set(off_outlets.keys()) | set(on_outlets.keys())
@@ -8362,7 +8362,8 @@ def build_combo_matrix(
     n_off = int(off_target_map.get(nv, 0) or len(off_outlets.get(nv, [])))
     n_on = int(on_target_map.get(nv, 0) or len(on_outlets.get(nv, [])))
     n_combo = n_off + n_on
-    to_tgt = _lookup_tgt(nv)
+    to_tgt = 0
+    # DATA2_CT will overwrite off_ct_ds_map/on_ct_ds_map after this loop
     if to_tgt > 0 and n_combo > 0:
       # Chia TARGET SO theo tỷ lệ số CH trong DS Combo OFF/ON (sau lọc Thứ)
       off_ct_ds_map[nv] = to_tgt * (n_off / n_combo)
@@ -8373,6 +8374,70 @@ def build_combo_matrix(
     else:
       off_ct_ds_map[nv] = 0
       on_ct_ds_map[nv] = 0
+
+  # ===== CT DS từ TARGETACTUAL BY OUTLET =====
+  # Map Outlet code → Target current month, cộng theo CH thuộc DS Combo OFF/ON
+  try:
+    _tgt_ou = None
+    for _fn in [
+        'TARGETACTUAL BY OUTLET.xlsx',
+        'TARGETACTUAL_BY_OUTLET.xlsx',
+        'TARGETACTUAL BY OUTLET.xls',
+        'TargetActualByOutlet.xlsx',
+    ]:
+      for _base in [
+          DATA_DIR, os.path.join(DATA_DIR, f'Thang{int(rd.month):02d}'),
+          os.path.join(DATA_DIR, f'Thang{int(rd.month)}'),
+          '/home/workdir/attachments',
+      ]:
+        _fp = os.path.join(_base, _fn)
+        if os.path.isfile(_fp):
+          try:
+            _tgt_ou = pd.read_excel(_fp)
+            break
+          except Exception:
+            pass
+      if _tgt_ou is not None:
+        break
+    if _tgt_ou is None:
+      for _base in [DATA_DIR, os.path.join(DATA_DIR, f'Thang{int(rd.month):02d}'), '/home/workdir/attachments']:
+        if not os.path.isdir(_base):
+          continue
+        for _fn in os.listdir(_base):
+          if 'TARGETACTUAL' in _fn.upper() and 'OUTLET' in _fn.upper() and _fn.lower().endswith(('.xlsx', '.xls')):
+            try:
+              _tgt_ou = pd.read_excel(os.path.join(_base, _fn))
+              break
+            except Exception:
+              pass
+        if _tgt_ou is not None:
+          break
+  except Exception:
+    _tgt_ou = None
+
+  if _tgt_ou is not None and not getattr(_tgt_ou, 'empty', True):
+    _cou = find_col(_tgt_ou, [
+        'Outlet code', 'Outlet Code', 'OUTLET_CODE', 'OUTLET CODE',
+        'Outlet_code', 'Mã CH', 'OUTLET_CD', 'Mã cửa hàng',
+    ])
+    _ctg = find_col(_tgt_ou, [
+        'Target current month', 'TARGET CURRENT MONTH', 'Target Current Month',
+        'Target', 'TARGET', 'Chỉ tiêu', 'TARGET SO',
+    ])
+    if _cou and _ctg:
+      _t = _tgt_ou.copy()
+      _t['_ma'] = _t[_cou].map(_norm_code)
+      _t['_tg'] = pd.to_numeric(_t[_ctg], errors='coerce').fillna(0.0)
+      _tg_by_ou = _t.groupby('_ma')['_tg'].max().to_dict()
+
+      def _ct_from_outlets(codes):
+        if not codes:
+          return 0.0
+        return float(sum(float(_tg_by_ou.get(c, 0) or 0) for c in codes))
+
+      for _nv in (set(off_outlets) | set(on_outlets) | set(off_target_map) | set(on_target_map)):
+        off_ct_ds_map[_nv] = _ct_from_outlets(off_outlets.get(_nv, set()))
+        on_ct_ds_map[_nv] = _ct_from_outlets(on_outlets.get(_nv, set()))
 
   rows = []
   for nv in nv_list:
