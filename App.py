@@ -9705,7 +9705,7 @@ def render_html_table(df, freeze_cols=None):
 
 
 
-# ====================== BÁO CÁO TẠO MỚI CH KÊNH ON ======================
+# ====================== TẠO MỚI KÊNH ON - CHUYÊN BEV ======================
 ON_L3_TYPES = [
     'quán café', 'quan cafe', 'quán cafe', 'quan café',
     'trà chén', 'tra chen',
@@ -9948,11 +9948,11 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
 
 
 def build_new_outlet_on_comments(df):
-  """Nhận xét 3 nhóm theo gap so với CT (=60).
+  """Nhận xét 3 nhóm theo (MCP ON + MTD) so với CT (=60).
 
-  - Gap > 30% CT  → còn thiếu > 18 CH  (MTD < 42)  ⚠️ Cảnh báo
-  - Gap < 30% CT  → còn thiếu ≤ 18 và chưa đạt (42 ≤ MTD < 60)
-  - Đã đạt (≥60)
+  - Gap > 30% CT  → (MCP+MTD)/CT < 70%   🚨
+  - Gap ≤ 30% CT  → 70% ≤ (MCP+MTD)/CT < 100%  ⚠️
+  - Đã đạt (≥ CT) → (MCP+MTD) ≥ 60  ✅
   """
   if df is None or df.empty:
     return ''
@@ -9960,51 +9960,63 @@ def build_new_outlet_on_comments(df):
   if body.empty:
     return ''
 
-  def _mtd(r):
+  def _num(r, col):
     try:
-      return int(r.get('MTD', 0) or 0)
+      return float(str(r.get(col, 0)).replace('%', '').replace(',', '').strip() or 0)
     except Exception:
-      return 0
+      return 0.0
 
   g_warn, g_near, g_ok = [], [], []
   for _, r in body.iterrows():
-    mtd = _mtd(r)
     ten = str(r.get('Tên NVBH', '')).strip()
-    gap_pct = (60 - mtd) / 60 * 100 if 60 else 0
-    if mtd >= 60:
-      g_ok.append((ten, mtd))
-    elif gap_pct > 30:  # mtd < 42
-      g_warn.append((ten, mtd, gap_pct))
+    mcp_n = _num(r, 'MCP ON')
+    mtd = _num(r, 'MTD')
+    ct = _num(r, 'CT') or 60
+    score = mcp_n + mtd
+    pct = score / ct * 100 if ct else 0
+    gap_pct = max(0.0, (ct - score) / ct * 100) if ct else 0
+    item = (ten, int(mcp_n), int(mtd), int(score), pct, gap_pct)
+    if score >= ct:
+      g_ok.append(item)
+    elif gap_pct > 30:  # score/ct < 70%
+      g_warn.append(item)
     else:
-      g_near.append((ten, mtd, gap_pct))
+      g_near.append(item)
 
-  def _fmt(lst, with_gap=False):
+  def _fmt(lst, ok=False):
     if not lst:
       return '<i>Không có</i>'
     parts = []
-    for item in sorted(lst, key=lambda x: -x[1])[:8]:
-      if with_gap:
-        parts.append(f'{item[0]} ({item[1]}/60, gap {item[2]:.0f}%)')
+    for it in sorted(lst, key=lambda x: -x[3])[:8]:
+      ten, mcp_n, mtd, score, pct, gap = it
+      if ok:
+        parts.append(f'{ten} ({int(score)}/60 · {pct:.0f}%)')
       else:
-        parts.append(f'{item[0]} ({item[1]}/60)')
+        parts.append(f'{ten} (MCP {mcp_n}+MTD {mtd}={int(score)}/60 · gap {gap:.0f}%)')
     more = f' +{len(lst)-8} khác' if len(lst) > 8 else ''
     return ', '.join(parts) + more
 
   html = [
       '<div style="background:#fffaf0;border:1px solid #f6ad55;border-radius:8px;'
       'padding:10px 14px;margin:10px 0;font-size:13px;color:#1a202c;">',
-      '<div style="font-weight:800;color:#c05621;margin-bottom:6px;">📝 NHẬN XÉT — TẠO MỚI CH KÊNH ON</div>',
-      f'<div style="margin:4px 0;"><b style="color:#c53030;">🚨 Cảnh báo — Gap &gt; 30% CT (MTD &lt; 42):</b> {_fmt(g_warn, True)}</div>',
-      f'<div style="margin:4px 0;"><b style="color:#dd6b20;">⚠️ Gần đạt — Gap ≤ 30% CT (42 ≤ MTD &lt; 60):</b> {_fmt(g_near, True)}</div>',
-      f'<div style="margin:4px 0;"><b style="color:#276749;">✅ Đã đạt / vượt CT (≥ 60):</b> {_fmt(g_ok)}</div>',
+      '<div style="font-weight:800;color:#c05621;margin-bottom:6px;">'
+      '📝 NHẬN XÉT — TẠO MỚI KÊNH ON - CHUYÊN BEV</div>',
+      f'<div style="margin:4px 0;"><b style="color:#c53030;">🚨 Cảnh báo — Gap &gt; 30% CT '
+      f'((MCP+MTD)/CT &lt; 70%):</b> {_fmt(g_warn)}</div>',
+      f'<div style="margin:4px 0;"><b style="color:#dd6b20;">⚠️ Gần đạt — Gap ≤ 30% CT '
+      f'(70% ≤ (MCP+MTD)/CT &lt; 100%):</b> {_fmt(g_near)}</div>',
+      f'<div style="margin:4px 0;"><b style="color:#276749;">✅ Đã đạt / vượt CT '
+      f'((MCP+MTD) ≥ 60):</b> {_fmt(g_ok, ok=True)}</div>',
       '<div style="margin-top:6px;font-size:11.5px;color:#718096;">'
-      'CT = 60 CH/NV · Gap = (CT − MTD) / CT · Nguồn: DanhSachXetDuyetCuaHang (Thêm mới + Đã duyệt + L1 ON + L3 đủ ĐK)</div>',
+      'CT = 60/NV · % MTD = (MCP ON + MTD) / CT · '
+      'MCP ON từ Data_MCP (L1 ON + L2/L3 đủ ĐK) · '
+      'MTD từ DanhSachXetDuyetCuaHang (Thêm mới + Đã duyệt + L1 ON + L2/L3 đủ ĐK)</div>',
       '</div>',
   ]
   return ''.join(html)
 
 
-def render_new_outlet_on_html(df, title='BÁO CÁO TẠO MỚI CH KÊNH ON'):
+def render_new_outlet_on_html(df, title='TẠO MỚI KÊNH ON - CHUYÊN BEV'):
   if df is None or df.empty:
     return f'<p style="color:#718096;">Không có dữ liệu — {title}</p>'
   cols = [c for c in df.columns if not str(c).startswith('_')]
@@ -18424,7 +18436,7 @@ with f2:
       # ===== Báo cáo giữ logic Tháng 9 =====
       '9. BÁO CÁO ĐH COMBO': 'COMBO',
       '10. BÁO CÁO TỔNG HỢP': 'SUMMARY',
-      '11. BÁO CÁO TẠO MỚI CH KÊNH ON': 'NEW_OUTLET_ON',
+      '11. TẠO MỚI KÊNH ON - CHUYÊN BEV': 'NEW_OUTLET_ON',
       '12. BÁO CÁO LỊCH VIẾNG THĂM': 'VISIT',
       '13. BÁO CÁO MBS CAT': 'MBS_CAT',
       '14. BÁO CÁO MBS BRAND': 'MBS_BRAND',
@@ -18445,7 +18457,7 @@ with f2:
         _items.append((_cfg['aso_xot']['name'], 'ASO_XOT'))
       if _code == 'COMBO':
         # Đặt Báo cáo Tạo Mới CH Kênh ON ngay trước ĐH Combo → thành số 11 (T11)
-        _items.append(('BÁO CÁO TẠO MỚI CH KÊNH ON', 'NEW_OUTLET_ON'))
+        _items.append(('TẠO MỚI KÊNH ON - CHUYÊN BEV', 'NEW_OUTLET_ON'))
       if _code == 'NEW_OUTLET_ON':
         continue  # đã chèn trước COMBO
       if _code == 'MBS_CAT' and _cfg.get('no_mbs_cat'):
@@ -18728,12 +18740,12 @@ if _nav == '📊 BÁO CÁO KPI':
     try:
       df_new_on = build_new_outlet_on_report(mcp, report_date, filter_nv=filter_nv)
     except Exception as _e_new:
-      st.error(f'Lỗi Báo Cáo Tạo Mới CH Kênh ON: {_e_new}')
+      st.error(f'Lỗi Báo Cáo Tạo Mới Kênh ON - Chuyên BEV: {_e_new}')
       st.exception(_e_new)
       df_new_on = pd.DataFrame()
     st.markdown(
         f'<h3 style="color:#034ea2;font-weight:800;margin-bottom:4px;'
-        f'font-size:16px;text-align:center;">BÁO CÁO TẠO MỚI CH KÊNH ON'
+        f'font-size:16px;text-align:center;">TẠO MỚI KÊNH ON - CHUYÊN BEV'
         f' — THÁNG {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -18745,7 +18757,7 @@ if _nav == '📊 BÁO CÁO KPI':
     )
     if df_new_on is None or df_new_on.empty:
       st.warning(
-          'Không có dữ liệu Tạo Mới CH Kênh ON. '
+          'Không có dữ liệu Tạo Mới Kênh ON - Chuyên BEV. '
           'Kiểm tra **Data_MCP.xlsx** và **DanhSachXetDuyetCuaHang.xlsx** trên GitHub.'
       )
     else:
@@ -18794,15 +18806,15 @@ if _nav == '📊 BÁO CÁO KPI':
       st.markdown(
           render_new_outlet_on_html(
               df_new_on,
-              title=f'TẠO MỚI CH KÊNH ON — {report_date.strftime("%m/%Y")}',
+              title=f'TẠO MỚI KÊNH ON - CHUYÊN BEV — {report_date.strftime("%m/%Y")}',
           ),
           unsafe_allow_html=True,
       )
       st.markdown(build_new_outlet_on_comments(df_new_on), unsafe_allow_html=True)
       st.download_button(
-          '📥 Tải CSV Tạo Mới CH Kênh ON',
+          '📥 Tải CSV Tạo Mới Kênh ON - Chuyên BEV',
           data=df_new_on.to_csv(index=False).encode('utf-8-sig'),
-          file_name=f'TaoMoi_CH_KenhON_{report_date.strftime("%Y%m%d")}.csv',
+          file_name=f'TaoMoi_KenhON_ChuyenBEV_{report_date.strftime("%Y%m%d")}.csv',
           mime='text/csv',
           key='dl_new_outlet_on',
       )
