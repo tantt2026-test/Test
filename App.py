@@ -8535,10 +8535,15 @@ def build_combo_matrix(  # combo_matrix_fn v2
     s_on_n = int(on_suat_ngay.get(nv, 0))
     s_on_m = int(on_suat_mtd.get(nv, 0))
 
-    th_off = int(round(off_th_map.get(nv, 0) or 0))
-    th_on = int(round(on_th_map.get(nv, 0) or 0))
+    # TH DS: chia 1000 (cùng scale với Target current month); % DS = TH/CT
+    th_off_raw = float(off_th_map.get(nv, 0) or 0)
+    th_on_raw = float(on_th_map.get(nv, 0) or 0)
+    th_off = int(round(th_off_raw / 1000.0))
+    th_on = int(round(th_on_raw / 1000.0))
     ct_ds_off = int(round(off_ct_ds_map.get(nv, 0) or 0))
     ct_ds_on = int(round(on_ct_ds_map.get(nv, 0) or 0))
+    pct_ds_off = round(th_off / ct_ds_off * 100, 1) if ct_ds_off else 0.0
+    pct_ds_on = round(th_on / ct_ds_on * 100, 1) if ct_ds_on else 0.0
 
     rows.append({
         'Tên NVBH': nv,
@@ -8551,6 +8556,8 @@ def build_combo_matrix(  # combo_matrix_fn v2
         'Suất MTD (OFF)': s_off_m,
         'Chỉ Tiêu (OFF)': ct_ds_off,
         'TH (OFF)': th_off,
+        '% DS (OFF)': f'{pct_ds_off}%',
+        '_pct_ds_off': pct_ds_off,
         '_pct_off_val': (m_off / tgt_off if tgt_off else 0),
         'Target (ON)': tgt_on,
         'MT Ngày (ON)': int(on_day_map.get(nv, 0)),
@@ -8561,13 +8568,15 @@ def build_combo_matrix(  # combo_matrix_fn v2
         'Suất MTD (ON)': s_on_m,
         'Chỉ Tiêu (ON)': ct_ds_on,
         'TH (ON)': th_on,
+        '% DS (ON)': f'{pct_ds_on}%',
+        '_pct_ds_on': pct_ds_on,
     })
 
   df_out = pd.DataFrame(rows)
   if not df_out.empty:
     df_out = (
         df_out.sort_values('_pct_off_val', ascending=True)
-        .drop(columns=['_pct_off_val'])
+        .drop(columns=['_pct_off_val'], errors='ignore')
         .reset_index(drop=True)
     )
     df_out.insert(0, 'STT', range(1, len(df_out) + 1))
@@ -8603,6 +8612,8 @@ def build_combo_matrix(  # combo_matrix_fn v2
   tot_th_off = int(df_out['TH (OFF)'].sum()) if not df_out.empty else 0
   tot_ct_on = int(df_out['Chỉ Tiêu (ON)'].sum()) if not df_out.empty else 0
   tot_th_on = int(df_out['TH (ON)'].sum()) if not df_out.empty else 0
+  tot_pct_ds_off = round(tot_th_off / tot_ct_off * 100, 1) if tot_ct_off else 0.0
+  tot_pct_ds_on = round(tot_th_on / tot_ct_on * 100, 1) if tot_ct_on else 0.0
 
   total_row = pd.DataFrame([{
       'STT': '-',
@@ -8619,6 +8630,8 @@ def build_combo_matrix(  # combo_matrix_fn v2
       'Suất MTD (OFF)': tot_s_off_m,
       'Chỉ Tiêu (OFF)': tot_ct_off,
       'TH (OFF)': tot_th_off,
+      '% DS (OFF)': f'{tot_pct_ds_off}%',
+      '_pct_ds_off': tot_pct_ds_off,
       'Target (ON)': tot_tgt_on,
       'MT Ngày (ON)': int(df_out['MT Ngày (ON)'].sum()) if not df_out.empty else 0,
       'Phát sinh Ngày (ON)': tot_n_on,
@@ -8628,6 +8641,8 @@ def build_combo_matrix(  # combo_matrix_fn v2
       'Suất MTD (ON)': tot_s_on_m,
       'Chỉ Tiêu (ON)': tot_ct_on,
       'TH (ON)': tot_th_on,
+      '% DS (ON)': f'{tot_pct_ds_on}%',
+      '_pct_ds_on': tot_pct_ds_on,
   }])
   return pd.concat([df_out, total_row], ignore_index=True), tot_tgt_off, tot_tgt_on
 
