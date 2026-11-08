@@ -16615,14 +16615,15 @@ def render_combo_matrix_html(df):
       f'min-width:{stt_w}px;max-width:{stt_w}px;{sh}">STT</th>',
       f'<th rowspan="2" style="{th_base}position:sticky;left:{stt_w}px;z-index:9;'
       f'min-width:{nv_w}px;max-width:{nv_w}px;{sh}">Tên NVBH</th>',
-      f'<th colspan="7" style="{th_base}">Kênh OFF</th>',
-      f'<th colspan="7" style="{th_base}">Kênh ON</th>',
+      f'<th colspan="9" style="{th_base}">Kênh OFF</th>',
+      f'<th colspan="9" style="{th_base}">Kênh ON</th>',
       '</tr>',
       # Row 2
       '<tr>',
   ]
   sub_cols = [
-      'Target', 'MT Ngày', 'Phát sinh<br>Ngày', 'MTD CH', '% MTD', 'Suất Ngày', 'Suất MTD'
+      'Target', 'MT Ngày', 'Phát sinh<br>Ngày', 'MTD CH', '% MTD', 'Suất Ngày', 'Suất MTD',
+      'Chỉ Tiêu', 'TH',
   ] * 2
   for c in sub_cols:
     html.append(f'<th style="{th_base}">{c}</th>')
@@ -16651,6 +16652,8 @@ def render_combo_matrix_html(df):
         fmt_pct(g(r, '% MTD (OFF)', default='0%')),
         fmt_num(g(r, 'Suất Ngày (OFF)')),
         fmt_num(g(r, 'Suất MTD (OFF)')),
+        fmt_num(g(r, 'Chỉ Tiêu (OFF)')),
+        fmt_num(g(r, 'TH (OFF)')),
         fmt_num(g(r, 'Target (ON)')),
         fmt_num(g(r, 'MT Ngày (ON)')),
         fmt_num(g(r, 'Phát sinh Ngày (ON)')),
@@ -16658,8 +16661,10 @@ def render_combo_matrix_html(df):
         fmt_pct(g(r, '% MTD (ON)', default='0%')),
         fmt_num(g(r, 'Suất Ngày (ON)')),
         fmt_num(g(r, 'Suất MTD (ON)')),
+        fmt_num(g(r, 'Chỉ Tiêu (ON)')),
+        fmt_num(g(r, 'TH (ON)')),
     ]
-    pct_idxs = {4, 11}  # % MTD OFF / ON
+    pct_idxs = {4, 13}  # % MTD OFF / ON
 
     html.append('<tr>')
     # STT sticky
