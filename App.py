@@ -9767,6 +9767,28 @@ def _is_on_l3(val):
   return any(k in n for k in keys)
 
 
+
+def _is_on_l2(val):
+  """L2 thuộc danh mục Kênh ON Chuyên BEV."""
+  n = _norm_txt_on(val)
+  if not n or n in ('nan', 'none'):
+    return False
+  keys = (
+      'quannuoc', 'canteen', 'maybanhang', 'giaitri',
+      'thethao', 'vanchuyen', 'quoclo', 'khac',
+  )
+  return any(k in n for k in keys)
+
+
+def _pass_on_l2_l3(row_l2, row_l3):
+  """Đủ ĐK nếu L3 match danh mục; fallback L2 nếu không có L3."""
+  if row_l3 is not None and str(row_l3).strip() and str(row_l3).lower() not in ('nan', 'none'):
+    return _is_on_l3(row_l3)
+  if row_l2 is not None:
+    return _is_on_l2(row_l2)
+  return False
+
+
 def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   """Báo cáo Tạo Mới CH Kênh ON.
 
@@ -9857,6 +9879,10 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
           'Tên Loại hình kinh doanh 1', 'Mã Loại hình kinh doanh 1',
           'Loại hình kinh doanh 1', 'L1', 'Business Type L1',
       ])
+      c_l2x = find_col(dfx, [
+          'Tên Loại hình kinh doanh 2', 'Mã Loại hình kinh doanh 2',
+          'Loại hình kinh doanh 2', 'L2', 'Business Type L2',
+      ])
       c_l3x = find_col(dfx, [
           'Tên Loại hình kinh doanh 3', 'Mã Loại hình kinh doanh 3',
           'Loại hình kinh doanh 3', 'L3', 'Business Type L3',
@@ -9865,7 +9891,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
       c_max = find_col(dfx, ['Mã CH', 'Outlet_code', 'Outlet Code', 'Mã KH'])
       c_ngay = find_col(dfx, ['Ngày tạo', 'Ngay tao', 'Created_date', 'Create Date'])
 
-      if c_nvx and c_ngay:
+      if c_nvx:
         d = dfx.copy()
         if c_loai:
           d = d[d[c_loai].astype(str).str.contains(
@@ -9876,24 +9902,39 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
         if c_l1x:
           d = d[d[c_l1x].astype(str).str.contains(
               r'\bON\b|On Premise|On-Premise', case=False, na=False, regex=True)]
-        if c_l3x:
-          d = d[d[c_l3x].map(_is_on_l3)]
+        # L2 / L3 đủ ĐK danh mục Chuyên BEV
+        if c_l3x is not None or c_l2x is not None:
+          d = d[d.apply(
+              lambda r: _pass_on_l2_l3(
+                  r[c_l2x] if c_l2x else None,
+                  r[c_l3x] if c_l3x else None,
+              ),
+              axis=1,
+          )]
         d['_nv'] = d[c_nvx].astype(str).str.strip()
         d = d[~d['_nv'].str.lower().isin(['nan', 'none', ''])]
-        d['_dt'] = pd.to_datetime(d[c_ngay], errors='coerce')
-        d = d[d['_dt'].notna()]
-        d['_day'] = d['_dt'].dt.date
-        d = d[(d['_day'] >= start) & (d['_day'] <= rd)]
+        # Ngày tạo — chỉ dùng cho cột Tạo Mới Ngày; MTD lấy toàn bộ file
+        if c_ngay:
+          d['_dt'] = pd.to_datetime(d[c_ngay], errors='coerce')
+          d['_day'] = d['_dt'].dt.date
+        else:
+          d['_day'] = None
         if nv_selected(filter_nv):
           d = filter_df_by_nv(d, '_nv', filter_nv)
+        # MTD = toàn bộ CH thỏa ĐK trong file (unique Mã CH) — KHÔNG lọc tháng
         for nv, g in d.groupby('_nv'):
           nv_all.add(nv)
           if c_max:
-            mtd_count[nv] = int(g[c_max].nunique())
-            day_count[nv] = int(g.loc[g['_day'] == rd, c_max].nunique())
+            mtd_count[nv] = int(g[c_max].astype(str).str.strip().nunique())
+            if c_ngay:
+              day_count[nv] = int(
+                  g.loc[g['_day'] == rd, c_max].astype(str).str.strip().nunique()
+              )
+            else:
+              day_count[nv] = 0
           else:
             mtd_count[nv] = int(len(g))
-            day_count[nv] = int((g['_day'] == rd).sum())
+            day_count[nv] = int((g['_day'] == rd).sum()) if c_ngay else 0
 
   if nv_selected(filter_nv) and nv_all:
     nv_all = {
