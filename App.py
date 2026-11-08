@@ -8004,7 +8004,7 @@ def combo_day_targets(df_master, df_visit, report_date):
   return m.groupby(m['Tên NV'].astype(str).str.strip())['outlet_code'].nunique().to_dict()
 
 
-def build_combo_matrix(
+def build_combo_matrix(  # combo_matrix_fn v2
     df, report_date, df_off_master, df_on_master, filter_nv=None, mcp_df=None, df_visit=None,
     f_thu_list=None,
 ):
@@ -8375,65 +8375,131 @@ def build_combo_matrix(
       off_ct_ds_map[nv] = 0
       on_ct_ds_map[nv] = 0
 
-  # ===== CT DS từ TARGETACTUAL BY OUTLET =====
-  # Map Outlet code → Target current month, cộng theo CH thuộc DS Combo OFF/ON
+  # ===== CT DS từ TARGETACTUAL BY OUTLET (cột Target current month) =====
+  # Map Outlet code → Target current month; cộng theo CH thuộc DS Combo OFF/ON
+  _tgt_ou = None
+  _tg_by_ou = {}
   try:
-    _tgt_ou = None
-    for _fn in [
+    _exact_names = [
         'TARGETACTUAL BY OUTLET.xlsx',
         'TARGETACTUAL_BY_OUTLET.xlsx',
         'TARGETACTUAL BY OUTLET.xls',
         'TargetActualByOutlet.xlsx',
-    ]:
-      for _base in [
-          DATA_DIR, os.path.join(DATA_DIR, f'Thang{int(rd.month):02d}'),
-          os.path.join(DATA_DIR, f'Thang{int(rd.month)}'),
-          '/home/workdir/attachments',
-      ]:
+        'TARGETACTUAL BY OUTLET.xlsm',
+    ]
+    _bases = []
+    try:
+      _bases.append(get_data_dir())
+    except Exception:
+      pass
+    try:
+      _mk = get_month_key()  # Thang11
+      _bases.append(os.path.join('data', _mk))
+    except Exception:
+      pass
+    _bases.extend([
+        os.path.join('data', f'Thang{int(rd.month):02d}'),
+        os.path.join('data', f'Thang{int(rd.month)}'),
+        'data',
+        DATA_DIR if isinstance(DATA_DIR, str) else 'data',
+        '/home/workdir/attachments',
+        '.',
+    ])
+    _seen = set()
+    for _base in _bases:
+      if not _base or _base in _seen or not os.path.isdir(str(_base)):
+        continue
+      _seen.add(_base)
+      # 1) Tên exact
+      for _fn in _exact_names:
         _fp = os.path.join(_base, _fn)
         if os.path.isfile(_fp):
           try:
-            _tgt_ou = pd.read_excel(_fp)
+            _tgt_ou = pd.read_excel(_fp, header=None)
             break
           except Exception:
             pass
       if _tgt_ou is not None:
         break
-    if _tgt_ou is None:
-      for _base in [DATA_DIR, os.path.join(DATA_DIR, f'Thang{int(rd.month):02d}'), '/home/workdir/attachments']:
-        if not os.path.isdir(_base):
-          continue
+      # 2) Quét tên chứa targetactual + outlet
+      try:
         for _fn in os.listdir(_base):
-          if 'TARGETACTUAL' in _fn.upper() and 'OUTLET' in _fn.upper() and _fn.lower().endswith(('.xlsx', '.xls')):
+          _low = _fn.lower().replace(' ', '').replace('_', '').replace('-', '')
+          if (
+              'targetactual' in _low and 'outlet' in _low
+              and _fn.lower().endswith(('.xlsx', '.xls', '.xlsm'))
+          ):
             try:
-              _tgt_ou = pd.read_excel(os.path.join(_base, _fn))
+              _tgt_ou = pd.read_excel(os.path.join(_base, _fn), header=None)
               break
             except Exception:
               pass
         if _tgt_ou is not None:
           break
+      except Exception:
+        pass
   except Exception:
     _tgt_ou = None
 
   if _tgt_ou is not None and not getattr(_tgt_ou, 'empty', True):
-    _cou = find_col(_tgt_ou, [
+    try:
+      _hdr_row = 0
+      for _i in range(min(10, len(_tgt_ou))):
+        _row_s = ' '.join(str(x) for x in _tgt_ou.iloc[_i].tolist()).lower()
+        if 'outlet' in _row_s and 'code' in _row_s:
+          _hdr_row = _i
+          break
+      _cols = [str(c).strip() for c in _tgt_ou.iloc[_hdr_row].tolist()]
+      _t = _tgt_ou.iloc[_hdr_row + 1:].copy()
+      _t.columns = _cols
+      _t = _t.reset_index(drop=True)
+    except Exception:
+      _t = _tgt_ou.copy()
+      _t.columns = [str(c).strip() for c in _t.columns]
+
+    _cou = find_col(_t, [
         'Outlet code', 'Outlet Code', 'OUTLET_CODE', 'OUTLET CODE',
         'Outlet_code', 'Mã CH', 'OUTLET_CD', 'Mã cửa hàng',
     ])
-    _ctg = find_col(_tgt_ou, [
+    _ctg = find_col(_t, [
         'Target current month', 'TARGET CURRENT MONTH', 'Target Current Month',
-        'Target', 'TARGET', 'Chỉ tiêu', 'TARGET SO',
+        'Target current Month', 'Target Current month',
     ])
+    if not _ctg:
+      for _c in _t.columns:
+        _cl = str(_c).lower().replace(' ', '').replace('_', '')
+        if 'target' in _cl and 'current' in _cl:
+          _ctg = _c
+          break
+    if not _ctg:
+      for _c in _t.columns:
+        _cl = str(_c).lower().replace(' ', '')
+        if 'target' in _cl and ('month' in _cl or 'tháng' in _cl):
+          _ctg = _c
+          break
+    if not _cou:
+      for _c in _t.columns:
+        _cl = str(_c).lower().replace(' ', '').replace('_', '')
+        if 'outlet' in _cl and 'code' in _cl:
+          _cou = _c
+          break
+
     if _cou and _ctg:
-      _t = _tgt_ou.copy()
+      _t = _t.copy()
       _t['_ma'] = _t[_cou].map(_norm_code)
       _t['_tg'] = pd.to_numeric(_t[_ctg], errors='coerce').fillna(0.0)
+      _t = _t[_t['_ma'].astype(str).str.len() > 0]
+      _t = _t[~_t['_ma'].str.lower().isin(['nan', 'none', 'outletcode', 'outlet code', ''])]
       _tg_by_ou = _t.groupby('_ma')['_tg'].max().to_dict()
 
       def _ct_from_outlets(codes):
         if not codes:
           return 0.0
-        return float(sum(float(_tg_by_ou.get(c, 0) or 0) for c in codes))
+        s = 0.0
+        for c in codes:
+          nc = _norm_code(c)
+          s += float(_tg_by_ou.get(nc, 0) or _tg_by_ou.get(str(c).strip(), 0) or 0)
+        return s
 
       for _nv in (set(off_outlets) | set(on_outlets) | set(off_target_map) | set(on_target_map)):
         off_ct_ds_map[_nv] = _ct_from_outlets(off_outlets.get(_nv, set()))
@@ -8446,6 +8512,16 @@ def build_combo_matrix(
     ):
       continue
     tgt_off = int(off_target_map.get(nv, 0))
+    # CT_DS: lấy từ TARGETACTUAL BY OUTLET
+    _ct_ds_off = float(off_ct_ds_map.get(nv, 0) or 0)
+    _ct_ds_on = float(on_ct_ds_map.get(nv, 0) or 0)
+    try:
+      _th_ds_off = float(off_th_ds_map.get(nv, 0) or 0)
+      _th_ds_on = float(on_th_ds_map.get(nv, 0) or 0)
+    except Exception:
+      _th_ds_off = 0.0
+      _th_ds_on = 0.0
+    # Force inject CT/TH DS into row dict below via locals
     m_off = int(off_mtd.get(nv, 0))
     n_off = int(off_ngay.get(nv, 0))
     pct_off = round(m_off / tgt_off * 100, 1) if tgt_off else 0
