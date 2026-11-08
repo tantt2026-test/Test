@@ -9768,26 +9768,49 @@ def _is_on_l3(val):
 
 
 def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
-  """Báo cáo Tạo Mới CH Kênh ON — nguồn DanhSachXetDuyetCuaHang.xlsx.
+  """Báo cáo Tạo Mới CH Kênh ON.
 
-  Điều kiện:
-  - Loại yêu cầu = Thêm mới CH
-  - Trạng thái duyệt = Đã duyệt
-  - L1 = Kênh On Premise / ON
-  - L3 thuộc danh mục ON (ảnh CV)
-
-  Cột:
+  - MCP ON (L3 ĐK): từ Data_MCP — L1 = On Premise + L3 thuộc danh mục ON
+  - Tạo Mới MTD / TH ngày: từ DanhSachXetDuyetCuaHang
+      (Thêm mới + Đã duyệt + L1 ON + L3 đủ ĐK; Ngày tạo trong tháng / đúng ngày BC)
   - CT = 60 / NV
-  - TH ngày = số CH tạo mới đúng ngày BC
-  - Tạo Mới MTD = số CH tạo mới từ đầu tháng → ngày BC
-  - % MTD = Tạo Mới MTD / CT
+  - % MTD = (MCP ON + Tạo Mới MTD) / CT
   """
-  cols = ['STT', 'Tên NVBH', 'CT', 'TH ngày', 'Tạo Mới MTD', '% MTD']
+  cols = ['STT', 'Tên NVBH', 'MCP ON (L3 ĐK)', 'CT', 'TH ngày', 'Tạo Mới MTD', '% MTD']
   empty = pd.DataFrame(columns=cols)
   if report_date is None:
     return empty
 
-  # Load file xét duyệt
+  rd = report_date.date() if hasattr(report_date, 'date') else report_date
+  start = date(rd.year, rd.month, 1)
+  CT = 60
+
+  # ========== 1) MCP ON từ Data_MCP ==========
+  mcp_count = {}  # nv -> unique outlet count
+  nv_all = set()
+  if mcp_df is not None and not mcp_df.empty:
+    mcp = mcp_df.copy()
+    c_nv = find_col(mcp, ['SM name', 'SM Name', 'Tên NVBH', 'Nhân viên'])
+    c_l1 = find_col(mcp, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel', 'Business Type L1'])
+    c_l3 = find_col(mcp, ['L3', 'x_msc_business_type_l3', 'Business Type L3', 'Type Outlet L3'])
+    c_ma = find_col(mcp, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
+    if c_nv and c_l1:
+      mcp['_nv'] = mcp[c_nv].astype(str).str.strip()
+      mcp = mcp[~mcp['_nv'].str.contains('vacant', case=False, na=False)]
+      mcp = mcp[~mcp['_nv'].str.lower().isin(['nan', 'none', ''])]
+      mcp = mcp[mcp[c_l1].astype(str).str.contains('On', case=False, na=False)]
+      if c_l3 is not None:
+        mcp = mcp[mcp[c_l3].map(_is_on_l3)]
+      if nv_selected(filter_nv):
+        mcp = filter_df_by_nv(mcp, '_nv', filter_nv)
+      for nv, g in mcp.groupby('_nv'):
+        n = int(g[c_ma].nunique()) if c_ma else len(g)
+        mcp_count[nv] = n
+        nv_all.add(nv)
+
+  # ========== 2) Tạo mới từ DanhSachXetDuyetCuaHang ==========
+  mtd_count = {}   # nv -> unique CH MTD
+  day_count = {}   # nv -> unique CH đúng ngày BC
   ddir = get_data_dir()
   path_xd = None
   for name in [
@@ -9799,141 +9822,121 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
     if os.path.exists(p):
       path_xd = p
       break
-  if path_xd is None:
-    return empty
 
-  try:
-    raw = pd.read_excel(path_xd, header=None)
-  except Exception:
-    return empty
-
-  # Tìm dòng header chứa "Mã CH" / "Tên NVBH" / "Ngày tạo"
-  hdr_idx = None
-  for i in range(min(15, len(raw))):
-    row_s = ' '.join(str(x) for x in raw.iloc[i].tolist())
-    if 'Mã CH' in row_s and ('Tên NVBH' in row_s or 'NVBH' in row_s):
-      hdr_idx = i
-      break
-  if hdr_idx is None:
+  if path_xd is not None:
     try:
-      dfx = pd.read_excel(path_xd)
+      raw = pd.read_excel(path_xd, header=None)
     except Exception:
-      return empty
-  else:
-    headers = [str(x).strip() if pd.notna(x) else f'col_{j}' for j, x in enumerate(raw.iloc[hdr_idx])]
-    dfx = raw.iloc[hdr_idx + 1:].copy()
-    dfx.columns = headers
-    dfx = dfx.dropna(how='all').reset_index(drop=True)
+      raw = None
+    dfx = None
+    if raw is not None and not raw.empty:
+      hdr_idx = None
+      for i in range(min(15, len(raw))):
+        row_s = ' '.join(str(x) for x in raw.iloc[i].tolist())
+        if 'Mã CH' in row_s and ('Tên NVBH' in row_s or 'NVBH' in row_s):
+          hdr_idx = i
+          break
+      if hdr_idx is not None:
+        headers = [
+            str(x).strip() if pd.notna(x) else f'col_{j}'
+            for j, x in enumerate(raw.iloc[hdr_idx])
+        ]
+        dfx = raw.iloc[hdr_idx + 1:].copy()
+        dfx.columns = headers
+        dfx = dfx.dropna(how='all').reset_index(drop=True)
+      else:
+        try:
+          dfx = pd.read_excel(path_xd)
+        except Exception:
+          dfx = None
 
-  if dfx is None or dfx.empty:
+    if dfx is not None and not dfx.empty:
+      c_loai = find_col(dfx, ['Loại yêu cầu', 'Loai yeu cau'])
+      c_tt = find_col(dfx, ['Trạng thái duyệt', 'Trang thai duyet', 'Trạng thái'])
+      c_l1x = find_col(dfx, [
+          'Tên Loại hình kinh doanh 1', 'Mã Loại hình kinh doanh 1',
+          'Loại hình kinh doanh 1', 'L1', 'Business Type L1',
+      ])
+      c_l3x = find_col(dfx, [
+          'Tên Loại hình kinh doanh 3', 'Mã Loại hình kinh doanh 3',
+          'Loại hình kinh doanh 3', 'L3', 'Business Type L3',
+      ])
+      c_nvx = find_col(dfx, ['Tên NVBH', 'SM name', 'SM Name', 'Nhân viên'])
+      c_max = find_col(dfx, ['Mã CH', 'Outlet_code', 'Outlet Code', 'Mã KH'])
+      c_ngay = find_col(dfx, ['Ngày tạo', 'Ngay tao', 'Created_date', 'Create Date'])
+
+      if c_nvx and c_ngay:
+        d = dfx.copy()
+        if c_loai:
+          d = d[d[c_loai].astype(str).str.contains(
+              'Thêm mới|Them moi|thêm mới', case=False, na=False, regex=True)]
+        if c_tt:
+          d = d[d[c_tt].astype(str).str.contains(
+              'Đã duyệt|Da duyet|đã duyệt', case=False, na=False, regex=True)]
+        if c_l1x:
+          d = d[d[c_l1x].astype(str).str.contains(
+              r'\bON\b|On Premise|On-Premise', case=False, na=False, regex=True)]
+        if c_l3x:
+          d = d[d[c_l3x].map(_is_on_l3)]
+        d['_nv'] = d[c_nvx].astype(str).str.strip()
+        d = d[~d['_nv'].str.lower().isin(['nan', 'none', ''])]
+        d['_dt'] = pd.to_datetime(d[c_ngay], errors='coerce')
+        d = d[d['_dt'].notna()]
+        d['_day'] = d['_dt'].dt.date
+        d = d[(d['_day'] >= start) & (d['_day'] <= rd)]
+        if nv_selected(filter_nv):
+          d = filter_df_by_nv(d, '_nv', filter_nv)
+        for nv, g in d.groupby('_nv'):
+          nv_all.add(nv)
+          if c_max:
+            mtd_count[nv] = int(g[c_max].nunique())
+            day_count[nv] = int(g.loc[g['_day'] == rd, c_max].nunique())
+          else:
+            mtd_count[nv] = int(len(g))
+            day_count[nv] = int((g['_day'] == rd).sum())
+
+  if nv_selected(filter_nv) and nv_all:
+    nv_all = {
+        x for x in nv_all
+        if any(str(x).strip().lower() == str(f).strip().lower() for f in (filter_nv or []))
+    }
+
+  if not nv_all:
     return empty
 
-  c_loai = find_col(dfx, ['Loại yêu cầu', 'Loai yeu cau'])
-  c_tt = find_col(dfx, ['Trạng thái duyệt', 'Trang thai duyet', 'Trạng thái'])
-  c_l1 = find_col(dfx, [
-      'Tên Loại hình kinh doanh 1', 'Mã Loại hình kinh doanh 1',
-      'Loại hình kinh doanh 1', 'L1', 'Business Type L1',
-  ])
-  c_l3 = find_col(dfx, [
-      'Tên Loại hình kinh doanh 3', 'Mã Loại hình kinh doanh 3',
-      'Loại hình kinh doanh 3', 'L3', 'Business Type L3',
-  ])
-  c_nv = find_col(dfx, ['Tên NVBH', 'SM name', 'SM Name', 'Nhân viên'])
-  c_ma = find_col(dfx, ['Mã CH', 'Outlet_code', 'Outlet Code', 'Mã KH'])
-  c_ngay = find_col(dfx, ['Ngày tạo', 'Ngay tao', 'Created_date', 'Create Date'])
-
-  if not c_nv or not c_ngay:
-    return empty
-
-  d = dfx.copy()
-  # Thêm mới + Đã duyệt
-  if c_loai:
-    d = d[d[c_loai].astype(str).str.contains('Thêm mới|Them moi|thêm mới', case=False, na=False, regex=True)]
-  if c_tt:
-    d = d[d[c_tt].astype(str).str.contains('Đã duyệt|Da duyet|đã duyệt', case=False, na=False, regex=True)]
-  # L1 = ON
-  if c_l1:
-    d = d[d[c_l1].astype(str).str.contains(r'\bON\b|On Premise|On-Premise', case=False, na=False, regex=True)]
-  # L3 thuộc danh mục
-  if c_l3:
-    d = d[d[c_l3].map(_is_on_l3)]
-  if d.empty:
-    return empty
-
-  d['_nv'] = d[c_nv].astype(str).str.strip()
-  d = d[d['_nv'].str.lower().isin([]) == False]
-  d = d[~d['_nv'].str.lower().isin(['nan', 'none', ''])]
-  d['_dt'] = pd.to_datetime(d[c_ngay], errors='coerce')
-  d = d[d['_dt'].notna()]
-  if d.empty:
-    return empty
-
-  rd = report_date.date() if hasattr(report_date, 'date') else report_date
-  start = date(rd.year, rd.month, 1)
-  d['_day'] = d['_dt'].dt.date
-  d = d[(d['_day'] >= start) & (d['_day'] <= rd)]
-  if d.empty:
-    # Vẫn hiện NV từ MCP với 0
-    pass
-
-  if nv_selected(filter_nv):
-    d = filter_df_by_nv(d, '_nv', filter_nv)
-
-  # Tập NV: từ file xét duyệt + toàn bộ NV team (để CT=60 hiện đủ)
-  nv_from_data = set(d['_nv'].unique()) if not d.empty else set()
-  nv_all = set(nv_from_data)
-  try:
-    if mcp_df is not None and not mcp_df.empty:
-      c_nv_m = find_col(mcp_df, ['SM name', 'SM Name', 'Tên NVBH'])
-      if c_nv_m:
-        for x in mcp_df[c_nv_m].dropna().astype(str).str.strip().unique():
-          if x and x.lower() not in ('nan', 'none', 'vacant'):
-            nv_all.add(x)
-  except Exception:
-    pass
-  if nv_selected(filter_nv):
-    # chỉ giữ NV trong filter
-    nv_all = {x for x in nv_all if any(
-        str(x).strip().lower() == str(f).strip().lower() for f in (filter_nv or [])
-    )}
-
-  CT = 60
   rows = []
   for nv in sorted(nv_all):
-    g = d[d['_nv'] == nv] if not d.empty else d
-    if c_ma and not g.empty:
-      mtd = int(g[c_ma].nunique())
-      th_day = int(g.loc[g['_day'] == rd, c_ma].nunique())
-    else:
-      mtd = int(len(g)) if not g.empty else 0
-      th_day = int((g['_day'] == rd).sum()) if not g.empty else 0
-    pct = round(mtd / CT * 100, 1) if CT else 0.0
+    mcp_n = int(mcp_count.get(nv, 0))
+    mtd = int(mtd_count.get(nv, 0))
+    th_day = int(day_count.get(nv, 0))
+    # % MTD = (MCP ON + Tạo Mới MTD) / CT
+    pct = round((mcp_n + mtd) / CT * 100, 1) if CT else 0.0
     rows.append({
         'Tên NVBH': nv,
+        'MCP ON (L3 ĐK)': mcp_n,
         'CT': CT,
         'TH ngày': th_day,
         'Tạo Mới MTD': mtd,
         '% MTD': f'{pct}%',
         '_pct': pct,
         '_mtd': mtd,
-        '_gap': CT - mtd,
+        '_mcp': mcp_n,
+        '_score': mcp_n + mtd,
     })
 
-  if not rows:
-    return empty
-
-  out = pd.DataFrame(rows).sort_values('_mtd', ascending=False).reset_index(drop=True)
+  out = pd.DataFrame(rows).sort_values('_score', ascending=False).reset_index(drop=True)
   out.insert(0, 'STT', range(1, len(out) + 1))
 
+  tot_mcp = int(out['MCP ON (L3 ĐK)'].sum())
   tot_ct = int(out['CT'].sum())
   tot_th = int(out['TH ngày'].sum())
   tot_mtd = int(out['Tạo Mới MTD'].sum())
-  # % total = tổng MTD / (60 * số NV) 
   n_nv = len(out)
-  tot_pct = round(tot_mtd / (CT * n_nv) * 100, 1) if n_nv else 0.0
+  tot_pct = round((tot_mcp + tot_mtd) / (CT * n_nv) * 100, 1) if n_nv and CT else 0.0
   tot = {
       'STT': '',
       'Tên NVBH': f'SS {_ss_name()} Total',
+      'MCP ON (L3 ĐK)': tot_mcp,
       'CT': tot_ct,
       'TH ngày': tot_th,
       'Tạo Mới MTD': tot_mtd,
@@ -18737,7 +18740,7 @@ if _nav == '📊 BÁO CÁO KPI':
     st.caption(
         f"⚡ Ngày BC: {report_date.strftime('%d/%m/%Y')} | "
         f"Lọc NV: {nv_label(filter_nv)} | "
-        f"Nguồn: DanhSachXetDuyetCuaHang · Thêm mới + Đã duyệt · L1 ON · L3 đủ ĐK · CT = 60/NV"
+        f"MCP ON từ Data_MCP · Tạo mới từ DanhSachXetDuyetCuaHang · CT = 60/NV · %MTD = (MCP ON + MTD)/CT"
     )
     if df_new_on is None or df_new_on.empty:
       st.warning(
@@ -18761,9 +18764,9 @@ if _nav == '📊 BÁO CÁO KPI':
           key='dl_new_outlet_on',
       )
       st.caption(
-          'CT = 60 CH/NV · TH ngày = CH tạo mới đúng ngày BC · '
-          'Tạo Mới MTD = CH tạo mới từ đầu tháng → ngày BC · % MTD = MTD / CT. '
-          'Chỉ tính: Thêm mới CH + Đã duyệt + L1 = ON + L3 thuộc danh mục.'
+          'MCP ON (L3 ĐK) = CH Kênh ON trên Data_MCP (L1 ON + L3 đủ ĐK). '
+          'TH ngày / Tạo Mới MTD = từ DanhSachXetDuyetCuaHang (Thêm mới + Đã duyệt + L1 ON + L3 đủ ĐK). '
+          'CT = 60/NV · % MTD = (MCP ON + Tạo Mới MTD) / CT.'
       )
 
   elif selected_kpi == 'SUMMARY':
