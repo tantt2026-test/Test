@@ -4703,8 +4703,12 @@ def _mcp_vip_outlet_map(mcp_df, channel='OFF'):
   else:
     mcp['_vip'] = ''
 
-  if c_l1 and str(channel).upper() != 'ALL':
-    mcp = mcp[mcp[c_l1].astype(str).str.contains('Off', case=False, na=False)]
+  if c_l1:
+    _ch = str(channel).upper()
+    if _ch == 'OFF':
+      mcp = mcp[mcp[c_l1].astype(str).str.contains('Off', case=False, na=False)]
+    elif _ch == 'ON':
+      mcp = mcp[mcp[c_l1].astype(str).str.contains('On', case=False, na=False)]
 
   if c_vip:
     for g in ('VIP3', 'VIP5', 'VIPSI'):
@@ -7628,8 +7632,12 @@ def _vip_base_maps(mcp_df, filter_nv=None, channel='OFF'):
   c_l1 = find_col(mcp, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel'])
   if not c_ma or not c_nv:
     return groups, {}, [], {}, {}, {}
-  if c_l1 and str(channel).upper() != 'ALL':
-    mcp = mcp[mcp[c_l1].astype(str).str.contains('Off', case=False, na=False)].copy()
+  if c_l1:
+    _ch = str(channel).upper()
+    if _ch == 'OFF':
+      mcp = mcp[mcp[c_l1].astype(str).str.contains('Off', case=False, na=False)].copy()
+    elif _ch == 'ON':
+      mcp = mcp[mcp[c_l1].astype(str).str.contains('On', case=False, na=False)].copy()
   mcp['_ma'] = mcp[c_ma].map(_norm_ma)
   mcp['_nv'] = mcp[c_nv].astype(str).str.strip()
   mcp['_freq'] = mcp[c_thu].astype(str).str.strip() if c_thu else ''
@@ -7878,7 +7886,7 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
 
 
 
-def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=None, targets=None, full_month=False):
+def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=None, targets=None, full_month=False, l1_filter='TOTAL'):
   """Bảng theo nhóm LẺ/VIP3/VIP5/VIPSI cho PC_BT, LPPC, ASO_FOCUS, ASO_FOCUS_2.
 
   PC_BT CT = số lần VT (ngày BC hoặc cả tháng nếu Full Tháng) × 65% — chỉ CH MCP OFF.
@@ -7918,26 +7926,32 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
   # CT
   ct_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
   if kpi_type == 'PC_BT':
-    # CT = Σ (số lần VT theo Thứ MCP) × 65%.
-    # VIP3/VIP5/VIPSI: CH OFF+ON có tag VIP trên MCP
-    # LẺ: chỉ CH MCP L1 OFF không thuộc VIP (không gộp ON vào LẺ)
-    # Full Tháng: số ngày VT cả tháng | Mặc định: CH lịch VT đúng ngày BC = 1
+    # CT = Số CH lịch VT đúng ngày BC theo L1 đang chọn (TOTAL / OFF / ON)
+    # LẺ = CH không VIP (OFF+ON khi TOTAL; chỉ OFF/ON khi chọn kênh)
     _rd_wd = report_date.weekday()
-    vip_all = _mcp_vip_outlet_map(mcp_df, channel='ALL')
-    vip_off = _mcp_vip_outlet_map(mcp_df, channel='OFF')
+    _l1f = str(l1_filter or 'TOTAL').upper()
+    _ch_map = 'ALL' if _l1f == 'TOTAL' else _l1f
+    vip_map = _mcp_vip_outlet_map(mcp_df, channel=_ch_map)
     ma_to_g_ct = {}
-    for g in ('VIP3', 'VIP5', 'VIPSI'):
-      for ma in vip_all.get(g, set()) or set():
+    for g in groups:
+      for ma in vip_map.get(g, set()) or set():
         ma_to_g_ct[str(ma).strip()] = g
-    for ma in vip_off.get('LẺ', set()) or set():
-      ma_to_g_ct[str(ma).strip()] = 'LẺ'
     mcp0 = mcp_df.copy()
     c_ma0 = find_col(mcp0, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
     c_nv0 = find_col(mcp0, ['SM Name', 'SM name', 'Tên NVBH', 'Nhân viên'])
     c_thu0 = find_col(mcp0, ['Thứ', 'Thứ VT', 'Frequency', 'Tần suất', 'FREQ', 'Thu VT'])
+    c_l10 = find_col(mcp0, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel'])
+
     def _nm0(x):
       s = str(x).strip()
       return s[:-2] if s.endswith('.0') else s
+
+    # Lọc MCP theo L1 trước khi lấy freq/nv
+    if c_l10 and _l1f == 'OFF':
+      mcp0 = mcp0[mcp0[c_l10].astype(str).str.contains('Off', case=False, na=False)].copy()
+    elif c_l10 and _l1f == 'ON':
+      mcp0 = mcp0[mcp0[c_l10].astype(str).str.contains('On', case=False, na=False)].copy()
+
     freq_map, nv_of = {}, {}
     if c_ma0 and c_nv0:
       for _, r in mcp0.iterrows():
@@ -7950,20 +7964,18 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
           fq = str(r[c_thu0]).strip()
           if fq and fq.lower() not in ('nan', 'none', ''):
             freq_map[ma] = fq
+
     ct_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
     for ma, g in ma_to_g_ct.items():
       nv = nv_of.get(ma, '')
       if nv not in ct_nv_g.get(g, {}):
         continue
       freq = freq_map.get(ma, '')
-      if full_month:
-        n_visit = _count_call_days_in_month(freq, y, m, as_of=None)
-      else:
-        n_visit = 1 if _rd_wd in _freq_to_weekdays(freq) else 0
-      ct_nv_g[g][nv] += float(n_visit)
-    for g in groups:
-      for nv in nv_list:
-        ct_nv_g[g][nv] = round(ct_nv_g[g][nv] * 0.65, 1)
+      if _rd_wd in _freq_to_weekdays(freq):
+        ct_nv_g[g][nv] += 1.0
+    # Dùng cùng map nhóm (theo L1 đang chọn) cho TH/MTD
+    ma_to_g = ma_to_g_ct
+
   elif kpi_type == 'LPPC':
     for g in groups:
       for nv in nv_list:
@@ -8004,7 +8016,12 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
     d = filter_df_by_nv(d, '_nv', filter_nv)
 
   if kpi_type == 'PC_BT' and not d.empty and 'L1' in d.columns:
-    d = d[d['L1'].astype(str).str.contains('Off', case=False, na=False)].copy()
+    _l1f = str(l1_filter or 'TOTAL').upper()
+    if _l1f == 'OFF':
+      d = d[d['L1'].astype(str).str.contains('Off', case=False, na=False)].copy()
+    elif _l1f == 'ON':
+      d = d[d['L1'].astype(str).str.contains('On', case=False, na=False)].copy()
+    # TOTAL: giữ cả OFF + ON
 
   cfg = get_month_cfg()
   if kpi_type == 'ASO_FOCUS' and not d.empty:
@@ -23357,18 +23374,45 @@ if _nav == '📊 BÁO CÁO KPI':
       try:
         set_color_moc_for_kpi(selected_kpi)
         _fm_key = f'vip_kpi_full_month_{selected_kpi}'
-        _fm_kpi = st.checkbox(
-            'Full Tháng',
-            value=bool(st.session_state.get(_fm_key, False)),
-            key=_fm_key,
-            help='Tắt: MTD = ngày BC | Bật: MTD = luỹ kế 01 → ngày BC',
-        )
+        _l1_key = f'vip_kpi_l1_{selected_kpi}'
+        if selected_kpi == 'PC_BT':
+          _c_fm, _c_l1 = st.columns([1, 2])
+          with _c_fm:
+            _fm_kpi = st.checkbox(
+                'Full Tháng',
+                value=bool(st.session_state.get(_fm_key, False)),
+                key=_fm_key,
+                help='Tắt: MTD = ngày BC | Bật: MTD = luỹ kế 01 → ngày BC',
+            )
+          with _c_l1:
+            st.markdown('<p class="filter-label">L1 (Kênh)</p>', unsafe_allow_html=True)
+            _l1_sel = st.radio(
+                'L1',
+                options=['TOTAL', 'OFF', 'ON'],
+                index=['TOTAL', 'OFF', 'ON'].index(
+                    st.session_state.get(_l1_key, 'TOTAL')
+                    if st.session_state.get(_l1_key, 'TOTAL') in ('TOTAL', 'OFF', 'ON')
+                    else 'TOTAL'
+                ),
+                horizontal=True,
+                key=_l1_key,
+                label_visibility='collapsed',
+            )
+        else:
+          _fm_kpi = st.checkbox(
+              'Full Tháng',
+              value=bool(st.session_state.get(_fm_key, False)),
+              key=_fm_key,
+              help='Tắt: MTD = ngày BC | Bật: MTD = luỹ kế 01 → ngày BC',
+          )
+          _l1_sel = 'TOTAL'
         _vip_kpi = build_kpi_vip_matrix(
             df, mcp, report_date,
             kpi_type=selected_kpi,
             filter_nv=filter_nv,
             targets=targets,
             full_month=bool(_fm_kpi),
+            l1_filter=_l1_sel if selected_kpi == 'PC_BT' else 'TOTAL',
         )
         if _vip_kpi is not None and not _vip_kpi.empty:
           _mode = 'Full Tháng (01→ngày BC)' if _fm_kpi else f'Ngày {report_date.strftime("%d/%m/%Y")}'
@@ -23379,7 +23423,7 @@ if _nav == '📊 BÁO CÁO KPI':
               'ASO_FOCUS_2': 'ASO FOCUS TRẬN VÀNG THEO NHÓM KH (LẺ / VIP3 / VIP5 / VIPSI)',
           }
           _cap_map = {
-              'PC_BT': 'CT = Số lần VT (ngày BC / Full Tháng) × 65% — CH MCP OFF+ON | TH/MTD = PC L1 OFF',
+              'PC_BT': 'CT = Số CH lịch VT ngày BC | TH/MTD = PC theo L1 (TOTAL/OFF/ON) | LẺ = OFF+ON (lọc theo nút L1)',
               'LPPC': 'CT: LẺ=4.7 | VIP3=5.0 | VIP5=6.0 | VIPSI=5.0 | TH = LPPC ngày BC | MTD = LPPC ngày/luỹ kế',
               'ASO_FOCUS': 'CT Total = tổng CH MCP OFF | TH & MTD theo nhóm (không CT nhóm) | MTD Total | % = MTD Total/CT Total',
               'ASO_FOCUS_2': 'CT Total = tổng CH MCP OFF | TH & MTD theo nhóm (không CT nhóm) | MTD Total | % = MTD Total/CT Total',
