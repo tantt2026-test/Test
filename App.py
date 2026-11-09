@@ -918,7 +918,6 @@ def _combo_from_dms(raw):
       'SS Name': 'SS', 'SM Name': 'Tên NV', 'OUTLET_CD': 'outlet_code', 'OUTLET': 'outlet_name',
       'Địa chỉ': 'Địa Chỉ', 'FREQ': 'Tần suất', 'VIP Type': 'VIP Type',
       'Business type L2': 'L2', 'TRẠNG THÁI THAM GIA': 'Trạng thái tham gia',
-      'Poscode': 'Poscode', 'POS_CODE': 'Poscode', 'SM UID': 'SM UID',
   }
   keep = [c for c in ren if c in d.columns] + [c for c in ['Thứ'] if c in d.columns]
   d['_prog'] = d['PROMOTION_NAME'].map(_combo_prog_label) if 'PROMOTION_NAME' in d.columns else 'Combo'
@@ -927,7 +926,7 @@ def _combo_from_dms(raw):
   progs = list(dict.fromkeys(d['_prog']))
   flag = d.assign(_v='✓').pivot_table(index='outlet_code', columns='_prog', values='_v', aggfunc='first')
   out = info.join(flag[[p for p in progs if p in flag.columns]]).reset_index()
-  front = ['Subregion', 'ASM', 'DMS_LOC', 'NPP', 'SS', 'Tên NV', 'Poscode', 'outlet_code', 'outlet_name', 'Địa Chỉ', 'Thứ']
+  front = ['Subregion', 'ASM', 'DMS_LOC', 'NPP', 'SS', 'Tên NV', 'outlet_code', 'outlet_name', 'Địa Chỉ', 'Thứ']
   cols = [c for c in front if c in out.columns] + [c for c in out.columns if c not in front]
   return out[cols]
 
@@ -3859,7 +3858,7 @@ def _gap_and_bq_day(target, mtd, remain_days, as_int=True):
 
 
 @st.cache_data(ttl=600)
-def _load_weekly_sales_m(month_key):  # data-2 / data-2-3.xlsx — RR lịch sử
+def _load_weekly_sales_m(month_key):
   """Load file bán hàng lịch sử cho Weekly Preview (data-2 / WeeklyPreview_Sales)."""
   preferred = [
       'data-2-2.xlsx', 'data-2-2.xls',
@@ -4646,9 +4645,14 @@ def build_weekly_lppc_all(mcp_df, sales_hist, df_rpt=None, filter_nv=None, month
 
 
 
-def _mcp_vip_outlet_map(mcp_df):
-  """Map Mã CH → VIP group (VIP3/VIP5/VIPSI), chỉ Kênh OFF."""
-  out = {'VIP3': set(), 'VIP5': set(), 'VIPSI': set()}
+def _mcp_vip_outlet_map(mcp_df, channel='OFF'):
+  """Map Mã CH → VIP group (VIP3/VIP5/VIPSI/LẺ).
+
+  channel:
+    - 'OFF' (mặc định): chỉ Kênh OFF
+    - 'ALL': OFF + ON (dùng cho CT PC BT × 65%)
+  """
+  out = {'VIP3': set(), 'VIP5': set(), 'VIPSI': set(), 'LẺ': set()}
   if mcp_df is None or mcp_df.empty:
     return out
   mcp = mcp_df.copy()
@@ -4658,7 +4662,6 @@ def _mcp_vip_outlet_map(mcp_df):
       'VIP Type', 'Loại VIP', 'Group VIP', 'Cust Group', 'Customer_Group',
       'SEGMENT', 'Segment', 'Hạng KH', 'Hang KH',
   ])
-  # fallback: cột nào có giá trị chứa VIP3/VIP5/VIPSI
   if not c_vip:
     for c in mcp.columns:
       try:
@@ -4669,7 +4672,7 @@ def _mcp_vip_outlet_map(mcp_df):
       except Exception:
         pass
   c_l1 = find_col(mcp, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel'])
-  if not c_ma or not c_vip:
+  if not c_ma:
     return out
 
   def _nma(x):
@@ -4684,31 +4687,36 @@ def _mcp_vip_outlet_map(mcp_df):
       return s
 
   mcp['_ma'] = mcp[c_ma].map(_nma)
-  mcp['_vip'] = mcp[c_vip].astype(str).str.strip().str.upper()
-  mcp['_vip'] = (
-      mcp['_vip']
-      .str.replace(' ', '', regex=False)
-      .str.replace('_', '', regex=False)
-      .str.replace('-', '', regex=False)
-  )
-  # VIP SI → VIPSI; VIP3/5 variants
-  mcp['_vip'] = mcp['_vip'].replace({
-      'VIPSI': 'VIPSI', 'VIPSI.': 'VIPSI',
-      'VIP3': 'VIP3', 'VIP03': 'VIP3',
-      'VIP5': 'VIP5', 'VIP05': 'VIP5',
-  })
-  if c_l1:
+  if c_vip:
+    mcp['_vip'] = mcp[c_vip].astype(str).str.strip().str.upper()
+    mcp['_vip'] = (
+        mcp['_vip']
+        .str.replace(' ', '', regex=False)
+        .str.replace('_', '', regex=False)
+        .str.replace('-', '', regex=False)
+    )
+    mcp['_vip'] = mcp['_vip'].replace({
+        'VIPSI': 'VIPSI', 'VIPSI.': 'VIPSI',
+        'VIP3': 'VIP3', 'VIP03': 'VIP3',
+        'VIP5': 'VIP5', 'VIP05': 'VIP5',
+    })
+  else:
+    mcp['_vip'] = ''
+
+  if c_l1 and str(channel).upper() != 'ALL':
     mcp = mcp[mcp[c_l1].astype(str).str.contains('Off', case=False, na=False)]
-  for g in ('VIP3', 'VIP5', 'VIPSI'):
-    if g == 'VIPSI':
-      mask = mcp['_vip'].str.contains('VIPSI', case=False, na=False)
-    else:
-      mask = mcp['_vip'] == g
-      # fallback contains if exact empty
-      if not mask.any():
-        mask = mcp['_vip'].str.contains(g, case=False, na=False) & ~mcp['_vip'].str.contains('VIPSI', case=False, na=False)
-    out[g] = set(x for x in mcp.loc[mask, '_ma'].tolist() if x)
-  # LẺ = CH OFF không thuộc VIP3 / VIP5 / VIPSI
+
+  if c_vip:
+    for g in ('VIP3', 'VIP5', 'VIPSI'):
+      if g == 'VIPSI':
+        mask = mcp['_vip'].str.contains('VIPSI', case=False, na=False)
+      else:
+        mask = mcp['_vip'] == g
+        if not mask.any():
+          mask = mcp['_vip'].str.contains(g, case=False, na=False) & ~mcp['_vip'].str.contains(
+              'VIPSI', case=False, na=False
+          )
+      out[g] = set(x for x in mcp.loc[mask, '_ma'].tolist() if x)
   vip_all = out['VIP3'] | out['VIP5'] | out['VIPSI']
   out['LẺ'] = set(x for x in mcp['_ma'].tolist() if x and x not in vip_all)
   return out
@@ -6967,16 +6975,18 @@ def _filter_df_for_kpi_order_detail(df, kpi_type):
     return frame[frame['Tên SP lower'].str.contains(pat, na=False, regex=True)].copy()
 
   if kt == 'ASO_FOCUS':
-    codes = cfg.get('aso_focus_codes') or []
-    pat = cfg.get('aso_focus_pat', r'búp non|bup non|tea\s*365|tea365')
+    codes = [c for c in (cfg.get('aso_focus_codes') or []) if str(c).strip()]
+    pat = cfg.get('aso_focus_pat', r'búp non|bup non|tea\s*365|tea365') or ''
     if get_month_key() == 'Thang09':
       pat = r'chant[eé]|chante'
     if codes:
       return _by_codes(d, codes)
-    return _by_pat(d, pat)
+    if pat and str(pat).strip():
+      return _by_pat(d, pat)
+    return d.iloc[0:0].copy()
 
   if kt == 'ASO_FOCUS_2':
-    codes = cfg.get('aso_focus2_codes') or []
+    codes = [c for c in (cfg.get('aso_focus2_codes') or []) if str(c).strip()]
     if get_month_key() == 'Thang09':
       if 'Tên SP lower' not in d.columns:
         d['Tên SP lower'] = d['Tên sản phẩm'].astype(str).str.lower() if 'Tên sản phẩm' in d.columns else ''
@@ -6986,7 +6996,10 @@ def _filter_df_for_kpi_order_detail(df, kpi_type):
       ].copy()
     if codes:
       return _by_codes(d, codes)
-    return _by_pat(d, cfg.get('aso_focus2_pat', r'homey'))
+    pat = cfg.get('aso_focus2_pat', r'homey') or ''
+    if pat and str(pat).strip():
+      return _by_pat(d, pat)
+    return d.iloc[0:0].copy()
 
   if kt in ('ASO_PL', 'ASO_XOT'):
     _pl = cfg.get('aso_pl' if kt == 'ASO_PL' else 'aso_xot') or {}
@@ -7590,7 +7603,7 @@ def render_vip_group_kpi_html(df, title='', money_groups=None, is_float=False):
 
 
 
-def _vip_base_maps(mcp_df, filter_nv=None):
+def _vip_base_maps(mcp_df, filter_nv=None, channel='OFF'):
   """Trả (groups, ma_to_g, nv_list, nv_ma, ma_to_nv, ma_to_freq)."""
   groups = ('LẺ', 'VIP3', 'VIP5', 'VIPSI')
 
@@ -7598,13 +7611,16 @@ def _vip_base_maps(mcp_df, filter_nv=None):
     s = str(x).strip()
     return s[:-2] if s.endswith('.0') else s
 
-  vip_map = _mcp_vip_outlet_map(mcp_df)
+  vip_map = _mcp_vip_outlet_map(mcp_df, channel=channel)
   mcp = mcp_df.copy()
   c_ma = find_col(mcp, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
   c_nv = find_col(mcp, ['SM Name', 'SM name', 'Tên NVBH', 'Nhân viên'])
   c_thu = find_col(mcp, ['Thứ', 'Thứ VT', 'Frequency', 'Tần suất', 'FREQ', 'Thu VT'])
+  c_l1 = find_col(mcp, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel'])
   if not c_ma or not c_nv:
     return groups, {}, [], {}, {}, {}
+  if c_l1 and str(channel).upper() != 'ALL':
+    mcp = mcp[mcp[c_l1].astype(str).str.contains('Off', case=False, na=False)].copy()
   mcp['_ma'] = mcp[c_ma].map(_norm_ma)
   mcp['_nv'] = mcp[c_nv].astype(str).str.strip()
   mcp['_freq'] = mcp[c_thu].astype(str).str.strip() if c_thu else ''
@@ -7862,7 +7878,10 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
   full_month=False: MTD = giá trị ngày BC; True: MTD = luỹ kế 01→ngày BC.
   TH luôn = giá trị ngày BC.
   """
-  groups, ma_to_g, nv_list, nv_ma, _, ma_to_freq = _vip_base_maps(mcp_df, filter_nv)
+  _ch = 'ALL' if kpi_type == 'PC_BT' else 'OFF'
+  groups, ma_to_g, nv_list, nv_ma, _, ma_to_freq = _vip_base_maps(
+      mcp_df, filter_nv, channel=_ch
+  )
   LPPC_CT = {'LẺ': 4.7, 'VIP3': 5.0, 'VIP5': 6.0, 'VIPSI': 5.0}
   is_aso = kpi_type in ('ASO_FOCUS', 'ASO_FOCUS_2')
 
@@ -7952,16 +7971,18 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
 
   cfg = get_month_cfg()
   if kpi_type == 'ASO_FOCUS' and not d.empty:
-    _codes = {str(c).strip().upper() for c in (cfg.get('aso_focus_codes') or [])}
-    pat = cfg.get('aso_focus_pat', r'búp non|bup non|tea\s*365|tea365')
+    _codes = {str(c).strip().upper() for c in (cfg.get('aso_focus_codes') or []) if str(c).strip()}
+    pat = cfg.get('aso_focus_pat', r'búp non|bup non|tea\s*365|tea365') or ''
     if get_month_key() == 'Thang09':
       pat = r'chant[eé]|chante'
     if _codes and 'Mã sản phẩm' in d.columns:
       d = d[d['Mã sản phẩm'].astype(str).str.strip().str.upper().isin(_codes)].copy()
-    else:
+    elif pat and str(pat).strip():
       if 'Tên SP lower' not in d.columns:
         d['Tên SP lower'] = d['Tên sản phẩm'].astype(str).str.lower() if 'Tên sản phẩm' in d.columns else ''
       d = d[d['Tên SP lower'].str.contains(pat, na=False, regex=True)].copy()
+    else:
+      d = d.iloc[0:0].copy()
   elif kpi_type == 'ASO_FOCUS_2' and not d.empty:
     if get_month_key() == 'Thang09':
       if 'Tên SP lower' not in d.columns:
@@ -7971,14 +7992,16 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
           & d['Tên SP lower'].str.contains(r'tr[oộ]n|tron', na=False, regex=True)
       ].copy()
     else:
-      pat = cfg.get('aso_focus2_pat', r'homey')
-      _codes = {str(c).strip().upper() for c in (cfg.get('aso_focus2_codes') or [])}
+      pat = cfg.get('aso_focus2_pat', r'homey') or ''
+      _codes = {str(c).strip().upper() for c in (cfg.get('aso_focus2_codes') or []) if str(c).strip()}
       if _codes and 'Mã sản phẩm' in d.columns:
         d = d[d['Mã sản phẩm'].astype(str).str.strip().str.upper().isin(_codes)].copy()
-      else:
+      elif pat and str(pat).strip():
         if 'Tên SP lower' not in d.columns:
           d['Tên SP lower'] = d['Tên sản phẩm'].astype(str).str.lower() if 'Tên sản phẩm' in d.columns else ''
         d = d[d['Tên SP lower'].str.contains(pat, na=False, regex=True)].copy()
+      else:
+        d = d.iloc[0:0].copy()
 
   if kpi_type == 'LPPC' and not d.empty:
     if 'Tên SP lower' not in d.columns and 'Tên sản phẩm' in d.columns:
@@ -8888,15 +8911,14 @@ def combo_day_targets(df_master, df_visit, report_date):
   return m.groupby(m['Tên NV'].astype(str).str.strip())['outlet_code'].nunique().to_dict()
 
 
-def build_combo_matrix(  # combo_matrix_fn v2
+def build_combo_matrix(
     df, report_date, df_off_master, df_on_master, filter_nv=None, mcp_df=None, df_visit=None,
     f_thu_list=None, full_month=False,
 ):
   """Matrix Combo OFF/ON + Chỉ Tiêu DS + TH DS + % DS.
 
-  - full_month=False (mặc định): TH DS = DS ngày BC; CT DS = CH lịch VT khớp thứ ngày BC
+  - full_month=False: TH DS = DS ngày BC; CT DS = CH lịch VT khớp thứ ngày BC
   - full_month=True: TH DS = cộng dồn 01 → ngày BC; CT DS = toàn bộ CH DS Combo
-  - MTD CH: luôn cộng dồn tháng, chỉ lọc NVBH
   """
   empty_cols = [
       'STT', 'Tên NVBH',
@@ -8989,10 +9011,8 @@ def build_combo_matrix(  # combo_matrix_fn v2
       3: ['5', '25'], 4: ['6', '36'], 5: ['7', '47'], 6: [],
   }
   _day_thu = _auto_thu_map.get(_wd, [])
-  # Master theo ngày (cho CT DS): CH có lịch VT khớp thứ của ngày BC
   df_off_master_day = _filter_master_thu(df_off_master_full, _day_thu) if _day_thu else df_off_master_full.iloc[0:0].copy()
   df_on_master_day = _filter_master_thu(df_on_master_full, _day_thu) if _day_thu else df_on_master_full.iloc[0:0].copy()
-  # Master full: MTD CH, Target CH count
   df_off_master = df_off_master_full
   df_on_master = df_on_master_full
 
@@ -9139,7 +9159,7 @@ def build_combo_matrix(  # combo_matrix_fn v2
     off_mtd, off_ngay, off_suat_mtd, off_suat_ngay = _maps_from_combo(off_sub, report_date)
     on_mtd, on_ngay, on_suat_mtd, on_suat_ngay = _maps_from_combo(on_sub, report_date)
 
-  # TH DS: ngày BC (mặc định) hoặc Full Tháng = 01 → ngày BC
+  # TH Doanh Số = DS của CH trong DS Combo **trong ngày BC** (lọc theo ô Ngày)
   off_th_map, on_th_map = {}, {}
   if df_mtd is not None and not df_mtd.empty:
     d_sales = df_mtd.copy()
@@ -9186,27 +9206,21 @@ def build_combo_matrix(  # combo_matrix_fn v2
         d_on['_nv_use'] = d_on['_nv_m'].where(d_on['_nv_m'].notna(), d_on['_nv'])
         on_th_map = d_on.groupby('_nv_use')['_ds'].sum().astype(float).to_dict()
 
-  # Chỉ Tiêu Doanh Số nhóm CH Combo — nguồn data-2 (OUTLET_CODE)
-  # CT DS = TB DS/tháng (các tháng trước tháng BC) của đúng CH thuộc DS Combo OFF/ON
+  # Chỉ Tiêu Doanh Số nhóm CH Combo
+  # Logic: CH thuộc DS Combo OFF/ON (sau lọc Thứ)
+  #   → map NV → TARGETACTUAL BY STD SKU -BY SM (TARGET SO tháng BC)
+  #   → chia theo tỷ lệ số CH OFF/ON trong DS Combo
   off_ct_ds_map, on_ct_ds_map = {}, {}
-  _tgt_by_nv = {}
-  _tgt_by_pos = {}
-  _pos_by_nv = {}
-  _USE_DATA2_FOR_CT = True
-  # data-2: CT DS = TB DS/tháng của CH trong DS Combo (các tháng trước tháng BC)
+  _tgt_by_nv = {}  # Tên NV → tổng TARGET SO tháng BC
   try:
-    _ws = load_weekly_sales()
+    _perf = load_perf_sku_data()
   except Exception:
-    _ws = pd.DataFrame()
-  # data-2 CT DS (OUTLET_CODE × Sales Before Discount)
-  if False and _ws is not None:  # legacy TARGETACTUAL block disabled
     _perf = pd.DataFrame()
-  if False:
+  if _perf is not None and not getattr(_perf, 'empty', True):
     c_month = find_col(_perf, ['MONTH', 'Month', 'Tháng'])
     c_tg = find_col(_perf, ['TARGET SO', 'Target SO', 'TARGET', 'Target', 'Chỉ tiêu'])
     c_pnv = find_col(_perf, ['SM NAME', 'SM_NAME', 'Tên NVBH', 'SM name', 'Nhân viên'])
-    c_pos = find_col(_perf, ['POS_CODE', 'POS CODE', 'Poscode', 'SM pos', 'SM POS'])
-    if c_month and c_tg and (c_pnv or c_pos):
+    if c_month and c_tg and c_pnv:
       p = _perf.copy()
       # Tháng BC: MM/YYYY hoặc biến thể
       _mk = f'{int(rd.month):02d}/{int(rd.year)}'
@@ -9242,23 +9256,30 @@ def build_combo_matrix(  # combo_matrix_fn v2
       p['_mk'] = p[c_month].map(_norm_month_cell)
       p = p[p['_mk'] == _mk]
       p['_tg'] = pd.to_numeric(p[c_tg], errors='coerce').fillna(0.0)
-      # Sum TARGET SO theo NV (SM NAME)
-      if c_pnv:
-        p['_nv'] = p[c_pnv].astype(str).str.strip()
-        _pnv = p[~p['_nv'].str.lower().isin(['nan', 'none', ''])]
-        _tgt_by_nv = _pnv.groupby('_nv')['_tg'].sum().astype(float).to_dict()
-        for _k, _v in list(_tgt_by_nv.items()):
-          _nk = re.sub(r'\s+', ' ', str(_k).strip())
-          if _nk != _k:
-            _tgt_by_nv[_nk] = _tgt_by_nv.get(_nk, 0) + float(_v)
-      # Sum TARGET SO theo POS_CODE (map ổn định với master Combo.Poscode)
-      if c_pos:
-        p['_pos'] = p[c_pos].astype(str).str.strip()
-        _ppos = p[~p['_pos'].str.lower().isin(['nan', 'none', ''])]
-        _tgt_by_pos = _ppos.groupby('_pos')['_tg'].sum().astype(float).to_dict()
+      p['_nv'] = p[c_pnv].astype(str).str.strip()
+      p = p[~p['_nv'].str.lower().isin(['nan', 'none', ''])]
+      # Sum TARGET SO theo NV
+      _tgt_by_nv = p.groupby('_nv')['_tg'].sum().astype(float).to_dict()
+      # Thêm key chuẩn hoá khoảng trắng
+      _extra = {}
+      for _k, _v in list(_tgt_by_nv.items()):
+        _nk = re.sub(r'\s+', ' ', str(_k).strip())
+        if _nk != _k:
+          _extra[_nk] = _extra.get(_nk, 0) + float(_v)
+      _tgt_by_nv.update(_extra)
 
   def _lookup_tgt(nv):
-    return 0.0  # deprecated — CT DS lấy từ data-2 bên dưới
+    if nv in _tgt_by_nv:
+      return float(_tgt_by_nv[nv] or 0)
+    nk = re.sub(r'\s+', ' ', str(nv).strip())
+    if nk in _tgt_by_nv:
+      return float(_tgt_by_nv[nk] or 0)
+    # fuzzy: contains
+    nv_l = nk.lower()
+    for k, v in _tgt_by_nv.items():
+      if str(k).strip().lower() == nv_l:
+        return float(v or 0)
+    return 0.0
 
   all_nv_for_ct = (
       set(off_outlets.keys()) | set(on_outlets.keys())
@@ -9268,8 +9289,7 @@ def build_combo_matrix(  # combo_matrix_fn v2
     n_off = int(off_target_map.get(nv, 0) or len(off_outlets.get(nv, [])))
     n_on = int(on_target_map.get(nv, 0) or len(on_outlets.get(nv, [])))
     n_combo = n_off + n_on
-    to_tgt = 0
-    # DATA2_CT will overwrite off_ct_ds_map/on_ct_ds_map after this loop
+    to_tgt = _lookup_tgt(nv)
     if to_tgt > 0 and n_combo > 0:
       # Chia TARGET SO theo tỷ lệ số CH trong DS Combo OFF/ON (sau lọc Thứ)
       off_ct_ds_map[nv] = to_tgt * (n_off / n_combo)
@@ -9282,7 +9302,6 @@ def build_combo_matrix(  # combo_matrix_fn v2
       on_ct_ds_map[nv] = 0
 
   # ===== CT DS từ TARGETACTUAL BY OUTLET (cột Target current month) =====
-  # Map Outlet code → Target current month; cộng theo CH thuộc DS Combo OFF/ON
   _tgt_ou = None
   _tg_by_ou = {}
   try:
@@ -9299,7 +9318,7 @@ def build_combo_matrix(  # combo_matrix_fn v2
     except Exception:
       pass
     try:
-      _mk = get_month_key()  # Thang11
+      _mk = get_month_key()
       _bases.append(os.path.join('data', _mk))
     except Exception:
       pass
@@ -9316,7 +9335,6 @@ def build_combo_matrix(  # combo_matrix_fn v2
       if not _base or _base in _seen or not os.path.isdir(str(_base)):
         continue
       _seen.add(_base)
-      # 1) Tên exact
       for _fn in _exact_names:
         _fp = os.path.join(_base, _fn)
         if os.path.isfile(_fp):
@@ -9327,7 +9345,6 @@ def build_combo_matrix(  # combo_matrix_fn v2
             pass
       if _tgt_ou is not None:
         break
-      # 2) Quét tên chứa targetactual + outlet
       try:
         for _fn in os.listdir(_base):
           _low = _fn.lower().replace(' ', '').replace('_', '').replace('-', '')
@@ -9424,16 +9441,6 @@ def build_combo_matrix(  # combo_matrix_fn v2
     ):
       continue
     tgt_off = int(off_target_map.get(nv, 0))
-    # CT_DS: lấy từ TARGETACTUAL BY OUTLET
-    _ct_ds_off = float(off_ct_ds_map.get(nv, 0) or 0)
-    _ct_ds_on = float(on_ct_ds_map.get(nv, 0) or 0)
-    try:
-      _th_ds_off = float(off_th_ds_map.get(nv, 0) or 0)
-      _th_ds_on = float(on_th_ds_map.get(nv, 0) or 0)
-    except Exception:
-      _th_ds_off = 0.0
-      _th_ds_on = 0.0
-    # Force inject CT/TH DS into row dict below via locals
     m_off = int(off_mtd.get(nv, 0))
     n_off = int(off_ngay.get(nv, 0))
     pct_off = round(m_off / tgt_off * 100, 1) if tgt_off else 0
@@ -9447,7 +9454,6 @@ def build_combo_matrix(  # combo_matrix_fn v2
     s_on_n = int(on_suat_ngay.get(nv, 0))
     s_on_m = int(on_suat_mtd.get(nv, 0))
 
-    # TH DS: chia 1000 (cùng scale với Target current month); % DS = TH/CT
     th_off_raw = float(off_th_map.get(nv, 0) or 0)
     th_on_raw = float(on_th_map.get(nv, 0) or 0)
     th_off = int(round(th_off_raw / 1000.0))
@@ -9488,7 +9494,7 @@ def build_combo_matrix(  # combo_matrix_fn v2
   if not df_out.empty:
     df_out = (
         df_out.sort_values('_pct_off_val', ascending=True)
-        .drop(columns=['_pct_off_val'], errors='ignore')
+        .drop(columns=['_pct_off_val'])
         .reset_index(drop=True)
     )
     df_out.insert(0, 'STT', range(1, len(df_out) + 1))
@@ -19446,8 +19452,8 @@ st.markdown(
 <div class="main-header">
     <div class="logo">{logo_svg}</div>
     <div class="title-block">
-        <h1>SƯ ĐOÀN HCM4 - TRUNG ĐOÀN 10</h1>
-        <h2>TRACKING KPI ĐDKD - TEAM SS TRƯƠNG THANH TÂN </h2>
+        <h1>SƯ ĐOÀN HCM4 - TRUNG ĐOÀN 11</h1>
+        <h2>TRACKING KPI ĐDKD - TEAM SS NGUYỄN THỊ TƯỜNG VY </h2>
     </div>
 </div>
 """,
@@ -23294,7 +23300,7 @@ if _nav == '📊 BÁO CÁO KPI':
       )
     st.markdown(render_html_table(_df_show), unsafe_allow_html=True)
 
-    # ---- Bảng theo nhóm LẺ / VIP3 / VIP5 / VIPSI ----
+# ---- Bảng theo nhóm LẺ / VIP3 / VIP5 / VIPSI ----
     if selected_kpi in ('PC_BT', 'LPPC', 'ASO_FOCUS', 'ASO_FOCUS_2'):
       try:
         set_color_moc_for_kpi(selected_kpi)
@@ -23321,7 +23327,7 @@ if _nav == '📊 BÁO CÁO KPI':
               'ASO_FOCUS_2': 'ASO FOCUS TRẬN VÀNG THEO NHÓM KH (LẺ / VIP3 / VIP5 / VIPSI)',
           }
           _cap_map = {
-              'PC_BT': 'CT = Số lần VT (ngày BC / Full Tháng) × 65% — chỉ CH MCP OFF | TH = PC ngày BC | MTD = PC ngày hoặc luỹ kế',
+              'PC_BT': 'CT = Số lần VT (ngày BC / Full Tháng) × 65% — CH MCP OFF+ON | TH/MTD = PC L1 OFF',
               'LPPC': 'CT: LẺ=4.7 | VIP3=5.0 | VIP5=6.0 | VIPSI=5.0 | TH = LPPC ngày BC | MTD = LPPC ngày/luỹ kế',
               'ASO_FOCUS': 'CT Total = tổng CH MCP OFF | TH & MTD theo nhóm (không CT nhóm) | MTD Total | % = MTD Total/CT Total',
               'ASO_FOCUS_2': 'CT Total = tổng CH MCP OFF | TH & MTD theo nhóm (không CT nhóm) | MTD Total | % = MTD Total/CT Total',
@@ -24202,7 +24208,7 @@ st.markdown(
     .mbs-data-table tbody tr:nth-child(odd) {
       background: #ffffff !important;
     }
-    .mbs-summary-table tbody tr:hover,
+.mbs-summary-table tbody tr:hover,
     .mbs-data-table tbody tr:hover {
       background: #eaf3ff !important;
     }
