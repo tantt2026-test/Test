@@ -156,26 +156,54 @@ st.markdown(
         caret-color: auto;
     }
     
+    /* Bảng KPI: font + padding scale theo viewport (desktop / mobile) */
     .custom-kpi-table {
         width: 100%;
         border-collapse: collapse;
         border: 1px solid #bce2f5 !important;
-        font-family: sans-serif;
-        font-size: 11px;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: clamp(13px, 0.95vw + 10px, 16px) !important;
         background-color: #ffffff;
+        table-layout: auto;
     }
     .custom-kpi-table th {
         background-color: #1a365d !important;
         color: #ffffff !important;
-        font-weight: bold !important;
+        font-weight: 800 !important;
         text-align: center !important;
         border: 1px solid #90cdf4 !important;
-        padding: 6px 5px;
+        padding: clamp(8px, 0.7vw, 12px) clamp(8px, 0.9vw, 14px) !important;
         white-space: nowrap;
+        font-size: clamp(13px, 0.95vw + 10px, 16px) !important;
+        line-height: 1.35 !important;
     }
     .custom-kpi-table td {
         border: 1px solid #bce2f5 !important;
-        padding: 5px 6px;
+        padding: clamp(7px, 0.65vw, 11px) clamp(8px, 0.85vw, 14px) !important;
+        font-size: clamp(13px, 0.95vw + 10px, 16px) !important;
+        line-height: 1.35 !important;
+    }
+    /* Tên NVBH: chữ lớn hơn một chút, canh trái */
+    .custom-kpi-table td[style*="text-align:left"],
+    .custom-kpi-table td[style*="text-align: left"] {
+        font-size: clamp(13px, 1vw + 10px, 16px) !important;
+    }
+    @media (max-width: 768px) {
+        .custom-kpi-table {
+            font-size: clamp(12px, 2.8vw, 14px) !important;
+        }
+        .custom-kpi-table th,
+        .custom-kpi-table td {
+            font-size: clamp(12px, 2.8vw, 14px) !important;
+            padding: 6px 8px !important;
+        }
+    }
+    @media (min-width: 1400px) {
+        .custom-kpi-table th,
+        .custom-kpi-table td {
+            font-size: 15px !important;
+            padding: 10px 12px !important;
+        }
     }
     .custom-kpi-table tbody tr:nth-child(even) td:not([data-colored="1"]) {
         background-color: #e6f4fc !important;
