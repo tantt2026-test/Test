@@ -7545,7 +7545,9 @@ def _vip_base_maps(mcp_df, filter_nv=None):
 
 
 def render_aso_focus_vip_html(df, title=''):
-  """Format ASO Focus VIP: CT Total | TH từng nhóm | MTD từng nhóm | MTD Total | % MTD."""
+  """ASO Focus VIP: CT Total | (TH, MTD) từng nhóm | MTD Total | % MTD.
+  Bỏ CT theo nhóm; giữ TH-MTD theo nhóm như rule cũ.
+  """
   groups = ('LẺ', 'VIP3', 'VIP5', 'VIPSI')
   if df is None or getattr(df, 'empty', True):
     return '<p style="color:#718096;">Không có dữ liệu ASO Focus theo nhóm VIP.</p>'
@@ -7586,16 +7588,17 @@ def render_aso_focus_vip_html(df, title=''):
       f'<th rowspan="2" style="{th}position:sticky;left:0;z-index:8;min-width:{stt_w}px;max-width:{stt_w}px;">STT</th>',
       f'<th rowspan="2" style="{th}position:sticky;left:{stt_w}px;z-index:8;min-width:{name_w}px;">Tên NVBH</th>',
       f'<th rowspan="2" style="{th}">CT Total</th>',
-      f'<th colspan="4" style="{th}">TH theo nhóm</th>',
-      f'<th colspan="4" style="{th}">MTD theo nhóm</th>',
+  ]
+  for g in groups:
+    html.append(f'<th colspan="2" style="{th}">{g}</th>')
+  html += [
       f'<th rowspan="2" style="{th}">MTD Total</th>',
       f'<th rowspan="2" style="{th}">% MTD</th>',
       '</tr><tr>',
   ]
-  for g in groups:
-    html.append(f'<th style="{th_sub}">TH {g}</th>')
-  for g in groups:
-    html.append(f'<th style="{th_sub}">MTD {g}</th>')
+  for _g in groups:
+    html.append(f'<th style="{th_sub}">TH</th>')
+    html.append(f'<th style="{th_sub}">MTD</th>')
   html.append('</tr></thead><tbody>')
 
   n_rows = len(df)
@@ -7646,14 +7649,12 @@ def render_aso_focus_vip_html(df, title=''):
     html.append(_cell(row.get('CT Total', 0)))
     for g in groups:
       html.append(_cell(row.get(f'TH {g}', 0)))
-    for g in groups:
       html.append(_cell(row.get(f'MTD {g}', 0)))
     html.append(_cell(row.get('MTD Total', 0)))
     html.append(_cell(row.get('% MTD', '0%'), is_pct=True))
     html.append('</tr>')
   html.append('</tbody></table></div>')
   return ''.join(html)
-
 
 
 def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=False):
@@ -7663,7 +7664,7 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
   full_month=False: MTD = DS ngày BC | full_month=True: MTD = DS 01→ngày BC.
   TH luôn = DS ngày BC.
   """
-  groups, ma_to_g, nv_list, nv_ma, _, _ = _vip_base_maps(mcp_df, filter_nv)
+  groups, ma_to_g, nv_list, nv_ma, _, ma_to_freq = _vip_base_maps(mcp_df, filter_nv)
   cols = ['STT', 'Tên NVBH']
   for g in groups:
     cols += [f'CT {g}', f'TH {g}', f'MTD {g}', f'% {g}']
@@ -7677,11 +7678,20 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
 
   tg_map = _load_outlet_target_map_x1000()
   ct_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
+  # Full Tháng: CT = tổng chỉ tiêu tất cả CH nhóm
+  # Mặc định: CT = chỉ tiêu CH có lịch VT khớp ngày BC
+  _rd_wd = report_date.weekday()  # Mon=0
   for nv in nv_list:
     for ma in nv_ma.get(nv, set()):
       g = ma_to_g.get(ma)
-      if g:
+      if not g:
+        continue
+      if full_month:
         ct_nv_g[g][nv] += float(tg_map.get(ma, 0) or 0)
+      else:
+        freq = ma_to_freq.get(ma, '')
+        if _rd_wd in _freq_to_weekdays(freq):
+          ct_nv_g[g][nv] += float(tg_map.get(ma, 0) or 0)
 
   d = df.copy()
   if 'date' not in d.columns:
@@ -7757,7 +7767,7 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
 def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=None, targets=None, full_month=False):
   """Bảng theo nhóm LẺ/VIP3/VIP5/VIPSI cho PC_BT, LPPC, ASO_FOCUS, ASO_FOCUS_2.
 
-  PC_BT CT = tổng số lần VT trong tháng (theo Thứ MCP) × 65%.
+  PC_BT CT = số lần VT (ngày BC hoặc cả tháng nếu Full Tháng) × 65% — chỉ CH MCP OFF.
   LPPC CT: LẺ=4.7 | VIP3=5.0 | VIP5=6.0 | VIPSI=5.0.
   ASO_FOCUS*: format CT Total | TH nhóm | MTD nhóm | MTD Total | % MTD.
   full_month=False: MTD = giá trị ngày BC; True: MTD = luỹ kế 01→ngày BC.
@@ -7791,14 +7801,20 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
   # CT
   ct_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
   if kpi_type == 'PC_BT':
-    # số lần VT trong tháng (full month) × 65%
+    # CT = số lần VT × 65%.
+    # Full Tháng: VT cả tháng | Mặc định: chỉ CH có lịch VT đúng ngày BC (1 lần).
+    # Chỉ CH Kênh OFF (map VIP từ MCP OFF, gồm nhóm LẺ).
+    _rd_wd = report_date.weekday()
     for nv in nv_list:
       for ma in nv_ma.get(nv, set()):
         g = ma_to_g.get(ma)
         if not g:
           continue
         freq = ma_to_freq.get(ma, '')
-        n_visit = _count_call_days_in_month(freq, y, m, as_of=None)
+        if full_month:
+          n_visit = _count_call_days_in_month(freq, y, m, as_of=None)
+        else:
+          n_visit = 1 if _rd_wd in _freq_to_weekdays(freq) else 0
         ct_nv_g[g][nv] += float(n_visit)
     for g in groups:
       for nv in nv_list:
@@ -21521,7 +21537,7 @@ if _nav == '📊 BÁO CÁO KPI':
             unsafe_allow_html=True,
         )
         st.caption(
-            'CT = Chỉ tiêu outlet (Target × 1000) MCP OFF | TH = DS ngày BC | '
+            'CT = Chỉ tiêu CH lịch VT ngày BC (Full Tháng = tổng tháng) | TH = DS ngày BC | '
             + ('MTD = DS luỹ kế 01→ngày BC' if _fm_to else 'MTD = DS ngày BC')
         )
     except Exception as _e_vip:
@@ -23216,10 +23232,10 @@ if _nav == '📊 BÁO CÁO KPI':
               'ASO_FOCUS_2': 'ASO FOCUS TRẬN VÀNG THEO NHÓM KH (LẺ / VIP3 / VIP5 / VIPSI)',
           }
           _cap_map = {
-              'PC_BT': 'CT = Tổng số lần VT trong tháng (Thứ MCP) × 65% | TH = PC ngày BC | MTD = PC ngày BC hoặc luỹ kế (Full Tháng)',
+              'PC_BT': 'CT = Số lần VT (ngày BC / Full Tháng) × 65% — chỉ CH MCP OFF | TH = PC ngày BC | MTD = PC ngày hoặc luỹ kế',
               'LPPC': 'CT: LẺ=4.7 | VIP3=5.0 | VIP5=6.0 | VIPSI=5.0 | TH = LPPC ngày BC | MTD = LPPC ngày/luỹ kế',
-              'ASO_FOCUS': 'CT Total = tổng CH MCP OFF các nhóm | TH/MTD theo nhóm | % = MTD Total / CT Total',
-              'ASO_FOCUS_2': 'CT Total = tổng CH MCP OFF các nhóm | TH/MTD theo nhóm | % = MTD Total / CT Total',
+              'ASO_FOCUS': 'CT Total = tổng CH MCP OFF | TH & MTD theo nhóm (không CT nhóm) | MTD Total | % = MTD Total/CT Total',
+              'ASO_FOCUS_2': 'CT Total = tổng CH MCP OFF | TH & MTD theo nhóm (không CT nhóm) | MTD Total | % = MTD Total/CT Total',
           }
           if selected_kpi in ('ASO_FOCUS', 'ASO_FOCUS_2'):
             st.markdown(
