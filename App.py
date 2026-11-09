@@ -23879,16 +23879,27 @@ if _nav == '🗺️ MCP VISIT':
           _tg_map = _t.groupby('_ma')['_tg'].max().to_dict()
           if _ma_total and _ma_total in df_total_show.columns:
             df_total_show['_ma_ct'] = df_total_show[_ma_total].map(_norm_ma_val)
-            df_total_show['Chỉ Tiêu theo CH'] = df_total_show['_ma_ct'].map(_tg_map).fillna(0)
+            # Target current month × 1000 → cột Chỉ Tiêu
+            df_total_show['Chỉ Tiêu'] = (
+                df_total_show['_ma_ct'].map(_tg_map).fillna(0).astype(float) * 1000.0
+            )
             df_total_show = df_total_show.drop(columns=['_ma_ct'], errors='ignore')
-            # format số gọn
-            df_total_show['Chỉ Tiêu theo CH'] = pd.to_numeric(
-                df_total_show['Chỉ Tiêu theo CH'], errors='coerce'
-            ).apply(lambda x: format_number_vn(x) if pd.notna(x) else '-')
     except Exception:
       pass
 
-    # format DS sau khi đã tính lại
+    # % DS = Doanh Số MTD / Chỉ Tiêu (trước khi format chuỗi)
+    if 'Chỉ Tiêu' in df_total_show.columns and d_ds and d_ds in df_total_show.columns:
+      _ct_num = pd.to_numeric(df_total_show['Chỉ Tiêu'], errors='coerce').fillna(0.0)
+      _ds_num = pd.to_numeric(df_total_show[d_ds], errors='coerce').fillna(0.0)
+      _pct = _ds_num.where(_ct_num > 0, 0.0) / _ct_num.where(_ct_num > 0, 1.0) * 100.0
+      _pct = _pct.where(_ct_num > 0, 0.0)
+      df_total_show['% DS'] = _pct.apply(lambda x: f'{float(x):.1f}%' if pd.notna(x) else '0.0%')
+
+    # format Chỉ Tiêu + DS sau khi đã tính % DS
+    if 'Chỉ Tiêu' in df_total_show.columns:
+      df_total_show['Chỉ Tiêu'] = pd.to_numeric(
+          df_total_show['Chỉ Tiêu'], errors='coerce'
+      ).apply(lambda x: format_number_vn(x) if pd.notna(x) else '-')
     if d_ds and d_ds in df_total_show.columns:
       df_total_show[d_ds] = pd.to_numeric(
           df_total_show[d_ds], errors='coerce'
@@ -23906,8 +23917,10 @@ if _nav == '🗺️ MCP VISIT':
     total_all_cols = [c for c in list(mcp.columns) if c in df_total_show.columns]
     if d_ds and d_ds in df_total_show.columns and d_ds not in total_all_cols:
       total_all_cols.append(d_ds)
-    if 'Chỉ Tiêu theo CH' in df_total_show.columns and 'Chỉ Tiêu theo CH' not in total_all_cols:
-      total_all_cols.append('Chỉ Tiêu theo CH')
+    if 'Chỉ Tiêu' in df_total_show.columns and 'Chỉ Tiêu' not in total_all_cols:
+      total_all_cols.append('Chỉ Tiêu')
+    if '% DS' in df_total_show.columns and '% DS' not in total_all_cols:
+      total_all_cols.append('% DS')
 
     saved_mcp_total_cols = st.query_params.get('mcp_total_cols', None)
     default_total_cols = total_all_cols
