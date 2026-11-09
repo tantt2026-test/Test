@@ -6919,17 +6919,104 @@ def _filter_turnover_detail_df(df, f_ngay=None, f_nv=None, f_ma=None, f_ten=None
   return body
 
 
-def _render_detail_slicers_and_tables(df_src, report_date, filter_nv, key_prefix, l1_fixed=None, show_l1_slicer=False):
+def _filter_df_for_kpi_order_detail(df, kpi_type):
+  """Lọc data bán hàng trước khi dựng bảng chi tiết ĐH/SP theo từng KPI."""
+  if df is None or getattr(df, 'empty', True) or not kpi_type:
+    return df
+  d = df.copy()
+  cfg = get_month_cfg()
+  kt = str(kpi_type).upper()
+
+  if kt == 'PC_BT':
+    if 'L1' in d.columns:
+      d = d[d['L1'].astype(str).str.contains('Off', case=False, na=False)].copy()
+    return d
+
+  if kt == 'LPPC':
+    # Trừ Meat & Beer (giống logic LPPC KPI)
+    if 'Tên SP lower' not in d.columns and 'Tên sản phẩm' in d.columns:
+      d['Tên SP lower'] = d['Tên sản phẩm'].astype(str).str.lower()
+    sub = d['Sub Division'].astype(str) if 'Sub Division' in d.columns else pd.Series('', index=d.index)
+    name = d['Tên SP lower'] if 'Tên SP lower' in d.columns else pd.Series('', index=d.index)
+    is_ex = sub.str.contains(
+        'Beer|Bia|Processed Meats|Thịt chế biến', case=False, na=False
+    ) | name.str.contains(
+        'beer|bia lush|white lion|red ruby|xúc xích|xuc xich|ponnie|'
+        'cao bồi|cao boi|hotdog|thịt viên|chân gà',
+        na=False,
+    )
+    return d[~is_ex].copy()
+
+  if kt == 'ASO_ALL':
+    return d
+
+  def _by_codes(frame, codes):
+    if frame is None or frame.empty or not codes or 'Mã sản phẩm' not in frame.columns:
+      return frame.iloc[0:0] if frame is not None else frame
+    cs = {str(c).strip().upper() for c in codes}
+    return frame[frame['Mã sản phẩm'].astype(str).str.strip().str.upper().isin(cs)].copy()
+
+  def _by_pat(frame, pat):
+    if frame is None or frame.empty or not pat:
+      return frame
+    if 'Tên SP lower' not in frame.columns:
+      frame = frame.copy()
+      frame['Tên SP lower'] = (
+          frame['Tên sản phẩm'].astype(str).str.lower() if 'Tên sản phẩm' in frame.columns else ''
+      )
+    return frame[frame['Tên SP lower'].str.contains(pat, na=False, regex=True)].copy()
+
+  if kt == 'ASO_FOCUS':
+    codes = cfg.get('aso_focus_codes') or []
+    pat = cfg.get('aso_focus_pat', r'búp non|bup non|tea\s*365|tea365')
+    if get_month_key() == 'Thang09':
+      pat = r'chant[eé]|chante'
+    if codes:
+      return _by_codes(d, codes)
+    return _by_pat(d, pat)
+
+  if kt == 'ASO_FOCUS_2':
+    codes = cfg.get('aso_focus2_codes') or []
+    if get_month_key() == 'Thang09':
+      if 'Tên SP lower' not in d.columns:
+        d['Tên SP lower'] = d['Tên sản phẩm'].astype(str).str.lower() if 'Tên sản phẩm' in d.columns else ''
+      return d[
+          d['Tên SP lower'].str.contains(r'omachi', na=False, regex=True)
+          & d['Tên SP lower'].str.contains(r'tr[oộ]n|tron', na=False, regex=True)
+      ].copy()
+    if codes:
+      return _by_codes(d, codes)
+    return _by_pat(d, cfg.get('aso_focus2_pat', r'homey'))
+
+  if kt in ('ASO_PL', 'ASO_XOT'):
+    _pl = cfg.get('aso_pl' if kt == 'ASO_PL' else 'aso_xot') or {}
+    if _pl.get('codes'):
+      return _by_codes(d, _pl['codes'])
+    if kt == 'ASO_PL':
+      return _by_pat(d, r'phúc long|phuc long')
+    return d
+
+  return d
+
+
+def _render_detail_slicers_and_tables(
+    df_src, report_date, filter_nv, key_prefix,
+    l1_fixed=None, show_l1_slicer=False, kpi_type=None, title_suffix='',
+):
   """Slicer dùng chung + 2 bảng chi tiết ĐH / SP.
   l1_fixed: 'OFF'|'ON'|None — ép kênh (PC BT / PC ON).
-  show_l1_slicer: True chỉ ở TURNOVER.
+  show_l1_slicer: True như TURNOVER (có ô lọc L1).
+  kpi_type: lọc SP/kênh theo rule KPI trước khi dựng bảng.
   """
+  # Lọc theo KPI (SP focus / L1 / trừ Meat-Beer…)
+  df_src2 = _filter_df_for_kpi_order_detail(df_src, kpi_type) if kpi_type else df_src
+
   # Build full (đầu tháng → ngày BC) rồi lọc bằng slicer
   df_ord_all = build_turnover_order_detail(
-      df_src, report_date, filter_nv, l1_filter=l1_fixed, date_list=None
+      df_src2, report_date, filter_nv, l1_filter=l1_fixed, date_list=None
   )
   df_sp_all = build_turnover_product_detail(
-      df_src, report_date, filter_nv, l1_filter=l1_fixed, date_list=None
+      df_src2, report_date, filter_nv, l1_filter=l1_fixed, date_list=None
   )
   # Options từ data (bỏ dòng tổng)
   def _opts(frame, col):
@@ -7010,7 +7097,9 @@ def _render_detail_slicers_and_tables(df_src, report_date, filter_nv, key_prefix
   )
 
   _suffix = ''
-  if l1_fixed == 'OFF':
+  if title_suffix:
+    _suffix = f' — {title_suffix}'
+  elif l1_fixed == 'OFF':
     _suffix = ' — Kênh OFF'
   elif l1_fixed == 'ON':
     _suffix = ' — Kênh ON'
@@ -23295,15 +23384,27 @@ if _nav == '📊 BÁO CÁO KPI':
       except Exception as _e_aso_vip:
         st.caption(f'COV VIP (ASO ALL): {_e_aso_vip}')
 
-    # Chi tiết ĐH/SP cho PC BT (OFF) & PC ON (ON) + Slicer
-    if selected_kpi in ('PC_BT', 'PC_ON'):
-      _l1 = 'OFF' if selected_kpi == 'PC_BT' else 'ON'
+    # Chi tiết ĐH/SP + Slicer (giống Turnover) cho các KPI
+    _detail_kpis = {
+        'PC_BT': ('PC BT — Kênh OFF', 'OFF', True),
+        'PC_ON': ('PC ON — Kênh ON', 'ON', True),
+        'LPPC': ('LPPC (trừ Meat/Beer)', None, True),
+        'ASO_ALL': ('ASO ALL', None, True),
+        'ASO_FOCUS': ('ASO Focus Trận Xanh', None, True),
+        'ASO_FOCUS_2': ('ASO Focus Trận Vàng', None, True),
+        'ASO_PL': ('ASO Trà Phúc Long', None, True),
+        'ASO_XOT': ('ASO Xốt Gia Vị', None, True),
+    }
+    if selected_kpi in _detail_kpis:
+      _suf, _l1f, _show_l1 = _detail_kpis[selected_kpi]
       try:
         _render_detail_slicers_and_tables(
             df, report_date, filter_nv,
-            key_prefix=f'pc_{selected_kpi.lower()}_detail',
-            l1_fixed=_l1,
-            show_l1_slicer=False,
+            key_prefix=f'kpi_{selected_kpi.lower()}_detail',
+            l1_fixed=_l1f,
+            show_l1_slicer=_show_l1,
+            kpi_type=selected_kpi,
+            title_suffix=_suf,
         )
       except Exception as _e_det:
         st.caption(f'Không tải được bảng chi tiết: {_e_det}')
