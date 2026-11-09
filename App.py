@@ -7253,6 +7253,230 @@ def build_turnover_report(df, report_date, turnover_targets, filter_nv=None):
   )
 
 
+def _load_outlet_target_map_x1000():
+  """Map mã CH → Chỉ tiêu (Target current month × 1000) từ TARGETACTUAL BY OUTLET."""
+  _tg_map = {}
+  try:
+    _tgt_ou = None
+    _exact = [
+        'TARGETACTUAL BY OUTLET.xlsx', 'TARGETACTUAL_BY_OUTLET.xlsx',
+        'TARGETACTUAL BY OUTLET.xls', 'TargetActualByOutlet.xlsx',
+    ]
+    _bases = []
+    try:
+      _bases.append(get_data_dir())
+    except Exception:
+      pass
+    try:
+      _bases.append(os.path.join('data', get_month_key()))
+    except Exception:
+      pass
+    _bases.extend(['data', DATA_DIR if isinstance(DATA_DIR, str) else 'data', '.'])
+    _seen = set()
+    for _b in _bases:
+      if not _b or _b in _seen or not os.path.isdir(str(_b)):
+        continue
+      _seen.add(_b)
+      for _fn in _exact:
+        _fp = os.path.join(_b, _fn)
+        if os.path.isfile(_fp):
+          try:
+            _tgt_ou = pd.read_excel(_fp, header=None)
+            break
+          except Exception:
+            pass
+      if _tgt_ou is not None:
+        break
+      try:
+        for _fn in os.listdir(_b):
+          _low = _fn.lower().replace(' ', '').replace('_', '').replace('-', '')
+          if 'targetactual' in _low and 'outlet' in _low and _fn.lower().endswith(('.xlsx', '.xls', '.xlsm')):
+            try:
+              _tgt_ou = pd.read_excel(os.path.join(_b, _fn), header=None)
+              break
+            except Exception:
+              pass
+        if _tgt_ou is not None:
+          break
+      except Exception:
+        pass
+    if _tgt_ou is None or getattr(_tgt_ou, 'empty', True):
+      return _tg_map
+
+    def _norm_ma(x):
+      s = str(x).strip()
+      return s[:-2] if s.endswith('.0') else s
+
+    _hdr = 0
+    for _i in range(min(10, len(_tgt_ou))):
+      _rs = ' '.join(str(x) for x in _tgt_ou.iloc[_i].tolist()).lower()
+      if 'outlet' in _rs and 'code' in _rs:
+        _hdr = _i
+        break
+    _cols = [str(c).strip() for c in _tgt_ou.iloc[_hdr].tolist()]
+    _t = _tgt_ou.iloc[_hdr + 1:].copy()
+    _t.columns = _cols
+    _t = _t.reset_index(drop=True)
+    _cou = find_col(_t, [
+        'Outlet code', 'Outlet Code', 'OUTLET_CODE', 'OUTLET CODE',
+        'Outlet_code', 'Mã CH', 'OUTLET_CD',
+    ])
+    _ctg = find_col(_t, ['Target current month', 'TARGET CURRENT MONTH', 'Target Current Month'])
+    if not _ctg:
+      for _c in _t.columns:
+        _cl = str(_c).lower().replace(' ', '').replace('_', '')
+        if 'target' in _cl and 'current' in _cl:
+          _ctg = _c
+          break
+    if not _cou:
+      for _c in _t.columns:
+        _cl = str(_c).lower().replace(' ', '').replace('_', '')
+        if 'outlet' in _cl and 'code' in _cl:
+          _cou = _c
+          break
+    if _cou and _ctg:
+      _t['_ma'] = _t[_cou].map(_norm_ma)
+      _t['_tg'] = pd.to_numeric(_t[_ctg], errors='coerce').fillna(0.0) * 1000.0
+      _tg_map = _t.groupby('_ma')['_tg'].max().to_dict()
+  except Exception:
+    pass
+  return _tg_map
+
+
+def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None):
+  """Bảng DS theo nhóm KH LẺ / VIP3 / VIP5 / VIPSI (Kênh OFF).
+
+  Mỗi NV: CT | TH (ngày) | MTD | %MTD cho từng nhóm.
+  CT = tổng Chỉ tiêu outlet (Target × 1000) của CH thuộc nhóm trên MCP OFF.
+  """
+  groups = ('LẺ', 'VIP3', 'VIP5', 'VIPSI')
+  cols = ['STT', 'Tên NVBH']
+  for g in groups:
+    cols += [f'CT {g}', f'TH {g}', f'MTD {g}', f'% {g}']
+
+  empty = pd.DataFrame(columns=cols)
+  if df is None or getattr(df, 'empty', True) or mcp_df is None or getattr(mcp_df, 'empty', True):
+    return empty
+
+  def _norm_ma(x):
+    s = str(x).strip()
+    return s[:-2] if s.endswith('.0') else s
+
+  vip_map = _mcp_vip_outlet_map(mcp_df)  # group -> set(outlet), OFF only
+  # CH → NV từ MCP
+  mcp = mcp_df.copy()
+  c_ma = find_col(mcp, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
+  c_nv = find_col(mcp, ['SM Name', 'SM name', 'Tên NVBH', 'Nhân viên'])
+  if not c_ma or not c_nv:
+    return empty
+  mcp['_ma'] = mcp[c_ma].map(_norm_ma)
+  mcp['_nv'] = mcp[c_nv].astype(str).str.strip()
+  # CH → group
+  ma_to_g = {}
+  for g in groups:
+    for ma in vip_map.get(g, set()) or set():
+      ma_to_g[_norm_ma(ma)] = g
+
+  # Chỉ tiêu outlet
+  tg_map = _load_outlet_target_map_x1000()
+
+  # Sales
+  d = df.copy()
+  if 'date' not in d.columns:
+    return empty
+  d = d[d['date'] >= date(report_date.year, report_date.month, 1)].copy()
+  if d.empty:
+    return empty
+  c_nv_s = find_col(d, ['Tên NVBH', 'SM Name', 'SM name', 'Nhân viên'])
+  c_ma_s = find_col(d, ['Mã CH', 'Outlet Code', 'Outlet_code', 'Mã KH', 'OUTLET_CD'])
+  c_ds = find_col(d, [
+      'Thành tiền trước CK', 'Thành tiền trước chiết khấu',
+      'Giá trị sau CK', 'Thành tiền', 'Doanh số', 'Doanh Số', 'Tổng tiền',
+  ])
+  if not c_nv_s or not c_ma_s or not c_ds:
+    return empty
+  # loại hủy nếu có
+  c_st = find_col(d, ['Trạng thái', 'Status', 'Order Status'])
+  if c_st:
+    d = d[~d[c_st].astype(str).str.contains('hủy|huy|cancel', case=False, na=False)]
+  d['_nv'] = d[c_nv_s].astype(str).str.strip()
+  d['_ma'] = d[c_ma_s].map(_norm_ma)
+  d['_ds'] = pd.to_numeric(d[c_ds], errors='coerce').fillna(0.0)
+  d['_g'] = d['_ma'].map(ma_to_g)
+  d = d[d['_g'].notna()].copy()
+  if nv_selected(filter_nv):
+    d = filter_df_by_nv(d, '_nv', filter_nv)
+
+  # NV list từ MCP OFF + sales
+  nv_set = set(mcp['_nv'].dropna().astype(str).str.strip().tolist())
+  nv_set |= set(d['_nv'].dropna().astype(str).str.strip().tolist())
+  nv_list = sorted([x for x in nv_set if x and x.lower() not in ('nan', 'none', '')])
+  if nv_selected(filter_nv):
+    vals = filter_nv if isinstance(filter_nv, list) else [filter_nv]
+    vals = {str(v).strip() for v in vals}
+    nv_list = [n for n in nv_list if n in vals]
+
+  # CT theo NV × group: sum target của CH MCP thuộc NV và group
+  ct_nv_g = {g: {} for g in groups}
+  for _, r in mcp.iterrows():
+    nv = str(r.get('_nv', '')).strip()
+    ma = _norm_ma(r.get('_ma', ''))
+    g = ma_to_g.get(ma)
+    if not nv or not g:
+      continue
+    ct_nv_g[g][nv] = ct_nv_g[g].get(nv, 0.0) + float(tg_map.get(ma, 0) or 0)
+
+  # MTD / TH theo NV × group
+  d_mtd = d
+  d_day = d[d['date'] == report_date]
+  mtd_nv_g = {g: {} for g in groups}
+  th_nv_g = {g: {} for g in groups}
+  if not d_mtd.empty:
+    for (nv, g), v in d_mtd.groupby(['_nv', '_g'])['_ds'].sum().items():
+      mtd_nv_g[g][nv] = float(v)
+  if not d_day.empty:
+    for (nv, g), v in d_day.groupby(['_nv', '_g'])['_ds'].sum().items():
+      th_nv_g[g][nv] = float(v)
+
+  rows = []
+  for nv in nv_list:
+    row = {'Tên NVBH': nv}
+    for g in groups:
+      ct = float(ct_nv_g[g].get(nv, 0) or 0)
+      th = float(th_nv_g[g].get(nv, 0) or 0)
+      mtd = float(mtd_nv_g[g].get(nv, 0) or 0)
+      pct = round(mtd / ct * 100, 1) if ct else 0.0
+      row[f'CT {g}'] = ct
+      row[f'TH {g}'] = th
+      row[f'MTD {g}'] = mtd
+      row[f'% {g}'] = f'{pct}%'
+    rows.append(row)
+
+  df_out = pd.DataFrame(rows)
+  if df_out.empty:
+    return empty
+  df_out = filter_out_cdgt_smvl(df_out) if 'filter_out_cdgt_smvl' in dir() else df_out
+  try:
+    df_out = filter_out_cdgt_smvl(df_out)
+  except Exception:
+    pass
+  df_out = df_out.reset_index(drop=True)
+  df_out.insert(0, 'STT', range(1, len(df_out) + 1))
+
+  # Total
+  tot = {'STT': '-', 'Tên NVBH': f'SS {_ss_name()} Total'}
+  for g in groups:
+    ct = float(df_out[f'CT {g}'].sum()) if f'CT {g}' in df_out.columns else 0.0
+    th = float(df_out[f'TH {g}'].sum()) if f'TH {g}' in df_out.columns else 0.0
+    mtd = float(df_out[f'MTD {g}'].sum()) if f'MTD {g}' in df_out.columns else 0.0
+    pct = round(mtd / ct * 100, 1) if ct else 0.0
+    tot[f'CT {g}'] = ct
+    tot[f'TH {g}'] = th
+    tot[f'MTD {g}'] = mtd
+    tot[f'% {g}'] = f'{pct}%'
+  return pd.concat([df_out, pd.DataFrame([tot])], ignore_index=True)
+
+
 # ====================== HÀM BÁO CÁO LỊCH VIẾNG THĂM (MỚI) ======================
 def build_visit_report(
     df_mcp, df_rpt, report_date, filter_nv=None, f_thu_list=None
@@ -20719,6 +20943,30 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(render_html_table(df_display), unsafe_allow_html=True)
 
+    # ---- DS theo nhóm KH LẺ / VIP3 / VIP5 / VIPSI ----
+    try:
+      df_vip_ds = build_turnover_vip_ds(df, mcp, report_date, filter_nv=filter_nv)
+      if df_vip_ds is not None and not df_vip_ds.empty:
+        st.markdown(
+            f'<h4 style="color:#034ea2;font-weight:800;margin:14px 0 6px;'
+            f'font-size:14px;text-align:center;">DOANH SỐ THEO NHÓM KH '
+            f'(LẺ / VIP3 / VIP5 / VIPSI) — THÁNG {report_date.strftime("%m/%Y")}</h4>',
+            unsafe_allow_html=True,
+        )
+        st.caption('CT = Chỉ tiêu outlet (Target × 1000) theo MCP OFF | TH = DS ngày BC | MTD = luỹ kế tháng')
+        df_vip_show = df_vip_ds.copy()
+        for g in ('LẺ', 'VIP3', 'VIP5', 'VIPSI'):
+          for c in (f'CT {g}', f'TH {g}', f'MTD {g}'):
+            if c in df_vip_show.columns:
+              df_vip_show[c] = df_vip_show[c].apply(
+                  lambda x: f'{float(x):,.0f}'.replace(',', '.')
+                  if isinstance(x, (int, float))
+                  else x
+              )
+        st.markdown(render_html_table(df_vip_show), unsafe_allow_html=True)
+    except Exception as _e_vip:
+      st.caption(f'Không tải được bảng DS theo nhóm VIP: {_e_vip}')
+
     # ---- Chi tiết ĐH + SP + Slicer (TURNOVER: có lọc L1) ----
     try:
       _render_detail_slicers_and_tables(
@@ -23104,10 +23352,19 @@ def render_mbs_data_table(df_show, selected_cols):
         )
 
       if '%' in str(col):
-        cls = color_pct_class(sval)
-        style = color_pct_bg(sval)
+        # % DS / % MTD: style màu phải thắng zebra sticky bg
+        cls = color_pct_class(sval) or ''
+        style = color_pct_bg(sval) or ''
+        sticky_pct = sticky
+        # bỏ background zebra trong sticky để không đè màu %
+        sticky_pct = sticky_pct.replace(f'background-color:{bg} !important;', '')
+        if not style:
+          style = (
+              'background-color:#fed7d7 !important;color:#742a2a !important;font-weight:700 !important;'
+          )
+          cls = cls or 'pct-red'
         html.append(
-            f'<td data-colored="1" class="{cls}" style="{style}{sticky}'
+            f'<td data-colored="1" class="{cls}" style="{sticky_pct}{style}'
             f'text-align:center !important;white-space:nowrap;">{sval}</td>'
         )
       elif any(x in col_lower for x in [
@@ -23217,6 +23474,31 @@ st.markdown(
     .mbs-summary-table tbody tr:hover,
     .mbs-data-table tbody tr:hover {
       background: #eaf3ff !important;
+    }
+    /* Cột % (vd % DS) — màu thắng zebra row */
+    .mbs-data-table td.pct-red,
+    .mbs-data-table td[data-colored="1"].pct-red {
+      background-color: #fed7d7 !important;
+      color: #742a2a !important;
+      font-weight: 700 !important;
+    }
+    .mbs-data-table td.pct-green,
+    .mbs-data-table td[data-colored="1"].pct-green {
+      background-color: #c6f6d5 !important;
+      color: #22543d !important;
+      font-weight: 700 !important;
+    }
+    .mbs-data-table td.pct-purple,
+    .mbs-data-table td[data-colored="1"].pct-purple {
+      background-color: #e9d8fd !important;
+      color: #553c9a !important;
+      font-weight: 700 !important;
+    }
+    .mbs-data-table td.pct-orange,
+    .mbs-data-table td[data-colored="1"].pct-orange {
+      background-color: #feebc8 !important;
+      color: #7b341e !important;
+      font-weight: 700 !important;
     }
     </style>
     """,
