@@ -6975,6 +6975,15 @@ def _filter_df_for_kpi_order_detail(df, kpi_type):
     return frame[frame['Tên SP lower'].str.contains(pat, na=False, regex=True)].copy()
 
   if kt == 'ASO_FOCUS':
+    _both = cfg.get('aso_focus_both')
+    if _both:
+      # Chỉ giữ dòng thuộc các mã SP trong 2 nhóm Tết (chi tiết ĐH)
+      _all_codes = []
+      for _cs in _both.values():
+        _all_codes.extend(list(_cs or []))
+      if _all_codes:
+        return _by_codes(d, _all_codes)
+      return d.iloc[0:0].copy()
     codes = [c for c in (cfg.get('aso_focus_codes') or []) if str(c).strip()]
     pat = cfg.get('aso_focus_pat', r'búp non|bup non|tea\s*365|tea365') or ''
     if get_month_key() == 'Thang09':
@@ -7909,21 +7918,49 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
   # CT
   ct_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
   if kpi_type == 'PC_BT':
-    # CT = số lần VT × 65%.
-    # Full Tháng: VT cả tháng | Mặc định: chỉ CH có lịch VT đúng ngày BC (1 lần).
-    # Chỉ CH Kênh OFF (map VIP từ MCP OFF, gồm nhóm LẺ).
+    # CT = Σ (số lần VT theo Thứ MCP) × 65%.
+    # VIP3/VIP5/VIPSI: CH OFF+ON có tag VIP trên MCP
+    # LẺ: chỉ CH MCP L1 OFF không thuộc VIP (không gộp ON vào LẺ)
+    # Full Tháng: số ngày VT cả tháng | Mặc định: CH lịch VT đúng ngày BC = 1
     _rd_wd = report_date.weekday()
-    for nv in nv_list:
-      for ma in nv_ma.get(nv, set()):
-        g = ma_to_g.get(ma)
-        if not g:
+    vip_all = _mcp_vip_outlet_map(mcp_df, channel='ALL')
+    vip_off = _mcp_vip_outlet_map(mcp_df, channel='OFF')
+    ma_to_g_ct = {}
+    for g in ('VIP3', 'VIP5', 'VIPSI'):
+      for ma in vip_all.get(g, set()) or set():
+        ma_to_g_ct[str(ma).strip()] = g
+    for ma in vip_off.get('LẺ', set()) or set():
+      ma_to_g_ct[str(ma).strip()] = 'LẺ'
+    mcp0 = mcp_df.copy()
+    c_ma0 = find_col(mcp0, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
+    c_nv0 = find_col(mcp0, ['SM Name', 'SM name', 'Tên NVBH', 'Nhân viên'])
+    c_thu0 = find_col(mcp0, ['Thứ', 'Thứ VT', 'Frequency', 'Tần suất', 'FREQ', 'Thu VT'])
+    def _nm0(x):
+      s = str(x).strip()
+      return s[:-2] if s.endswith('.0') else s
+    freq_map, nv_of = {}, {}
+    if c_ma0 and c_nv0:
+      for _, r in mcp0.iterrows():
+        ma = _nm0(r[c_ma0])
+        nv = str(r[c_nv0]).strip()
+        if not ma or not nv:
           continue
-        freq = ma_to_freq.get(ma, '')
-        if full_month:
-          n_visit = _count_call_days_in_month(freq, y, m, as_of=None)
-        else:
-          n_visit = 1 if _rd_wd in _freq_to_weekdays(freq) else 0
-        ct_nv_g[g][nv] += float(n_visit)
+        nv_of[ma] = nv
+        if c_thu0:
+          fq = str(r[c_thu0]).strip()
+          if fq and fq.lower() not in ('nan', 'none', ''):
+            freq_map[ma] = fq
+    ct_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
+    for ma, g in ma_to_g_ct.items():
+      nv = nv_of.get(ma, '')
+      if nv not in ct_nv_g.get(g, {}):
+        continue
+      freq = freq_map.get(ma, '')
+      if full_month:
+        n_visit = _count_call_days_in_month(freq, y, m, as_of=None)
+      else:
+        n_visit = 1 if _rd_wd in _freq_to_weekdays(freq) else 0
+      ct_nv_g[g][nv] += float(n_visit)
     for g in groups:
       for nv in nv_list:
         ct_nv_g[g][nv] = round(ct_nv_g[g][nv] * 0.65, 1)
@@ -7971,18 +8008,33 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
 
   cfg = get_month_cfg()
   if kpi_type == 'ASO_FOCUS' and not d.empty:
-    _codes = {str(c).strip().upper() for c in (cfg.get('aso_focus_codes') or []) if str(c).strip()}
-    pat = cfg.get('aso_focus_pat', r'búp non|bup non|tea\s*365|tea365') or ''
-    if get_month_key() == 'Thang09':
-      pat = r'chant[eé]|chante'
-    if _codes and 'Mã sản phẩm' in d.columns:
-      d = d[d['Mã sản phẩm'].astype(str).str.strip().str.upper().isin(_codes)].copy()
-    elif pat and str(pat).strip():
-      if 'Tên SP lower' not in d.columns:
-        d['Tên SP lower'] = d['Tên sản phẩm'].astype(str).str.lower() if 'Tên sản phẩm' in d.columns else ''
-      d = d[d['Tên SP lower'].str.contains(pat, na=False, regex=True)].copy()
+    # T11: aso_focus_both = CH phải mua ĐỦ các nhóm SP Tết (đúng rule bảng KPI chính)
+    _both = cfg.get('aso_focus_both')
+    if _both:
+      per = aso_focus_both_done(d, _both)
+      if per is None or per.empty:
+        d = d.iloc[0:0].copy()
+      else:
+        # giữ dòng CH đã đạt cả 2 nhóm (dùng per làm nguồn đếm unique CH)
+        d = per.copy()
+        d['_ma'] = d['Mã CH'].map(_norm_ma)
+        if 'Tên NVBH' in d.columns:
+          d['_nv'] = d['Tên NVBH'].astype(str).str.strip()
+        d['_g'] = d['_ma'].map(ma_to_g)
+        d = d[d['_g'].notna()].copy()
     else:
-      d = d.iloc[0:0].copy()
+      _codes = {str(c).strip().upper() for c in (cfg.get('aso_focus_codes') or []) if str(c).strip()}
+      pat = cfg.get('aso_focus_pat', r'búp non|bup non|tea\s*365|tea365') or ''
+      if get_month_key() == 'Thang09':
+        pat = r'chant[eé]|chante'
+      if _codes and 'Mã sản phẩm' in d.columns:
+        d = d[d['Mã sản phẩm'].astype(str).str.strip().str.upper().isin(_codes)].copy()
+      elif pat and str(pat).strip():
+        if 'Tên SP lower' not in d.columns:
+          d['Tên SP lower'] = d['Tên sản phẩm'].astype(str).str.lower() if 'Tên sản phẩm' in d.columns else ''
+        d = d[d['Tên SP lower'].str.contains(pat, na=False, regex=True)].copy()
+      else:
+        d = d.iloc[0:0].copy()
   elif kpi_type == 'ASO_FOCUS_2' and not d.empty:
     if get_month_key() == 'Thang09':
       if 'Tên SP lower' not in d.columns:
@@ -19452,8 +19504,8 @@ st.markdown(
 <div class="main-header">
     <div class="logo">{logo_svg}</div>
     <div class="title-block">
-        <h1>SƯ ĐOÀN HCM4 - TRUNG ĐOÀN 11</h1>
-        <h2>TRACKING KPI ĐDKD - TEAM SS NGUYỄN THỊ TƯỜNG VY </h2>
+        <h1>SƯ ĐOÀN HCM4 - TRUNG ĐOÀN 10</h1>
+        <h2>TRACKING KPI ĐDKD - TEAM SS TRƯƠNG THANH TÂN </h2>
     </div>
 </div>
 """,
