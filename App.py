@@ -7514,8 +7514,10 @@ def render_vip_group_kpi_html(df, title='', money_groups=None, is_float=False):
   ]
   for g in groups:
     html.append(f'<th colspan="4" style="{th}">{g}</th>')
+  # Cột Total cuối bảng
+  html.append(f'<th colspan="4" style="{th}">Total</th>')
   html.append('</tr><tr>')
-  for _g in groups:
+  for _g in list(groups) + ['Total']:
     for sub in ('CT', 'TH', 'MTD', '% MTD'):
       html.append(f'<th style="{th_sub}">{sub}</th>')
   html.append('</tr></thead><tbody>')
@@ -7548,13 +7550,19 @@ def render_vip_group_kpi_html(df, title='', money_groups=None, is_float=False):
       )
       html.append(f'<td style="{sty}{sticky}">{val}</td>')
 
-    for g in groups:
+    for g in list(groups) + ['Total']:
       for metric in ('CT', 'TH', 'MTD', '%'):
-        col = f'{metric} {g}' if metric != '%' else f'% {g}'
-        # also accept '% MTD' naming
-        if col not in row.index and metric == '%':
-          col = f'% MTD {g}' if f'% MTD {g}' in row.index else f'% {g}'
-        raw = row.get(col, row.get(f'% MTD {g}', '')) if metric == '%' else row.get(col, '')
+        if g == 'Total':
+          col = f'{metric} Total' if metric != '%' else '% Total'
+          if col not in row.index and metric == '%':
+            col = '% Total'
+          raw = row.get(col, '')
+        else:
+          col = f'{metric} {g}' if metric != '%' else f'% {g}'
+          # also accept '% MTD' naming
+          if col not in row.index and metric == '%':
+            col = f'% MTD {g}' if f'% MTD {g}' in row.index else f'% {g}'
+          raw = row.get(col, row.get(f'% MTD {g}', '')) if metric == '%' else row.get(col, '')
         if pd.isna(raw):
           raw = ''
         if metric == '%':
@@ -7913,6 +7921,7 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
     cols = ['STT', 'Tên NVBH']
     for g in groups:
       cols += [f'CT {g}', f'TH {g}', f'MTD {g}', f'% {g}']
+    cols += ['CT Total', 'TH Total', 'MTD Total', '% Total']
   empty = pd.DataFrame(columns=cols)
   if not nv_list or df is None or getattr(df, 'empty', True):
     return empty
@@ -8214,6 +8223,7 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
       row['MTD Total'] = mtd_total
       row['% MTD'] = f'{round(mtd_total / ct_total * 100, 1) if ct_total else 0.0}%'
     else:
+      _sum_ct = _sum_th = _sum_mtd = 0.0
       for g in groups:
         if kpi_type == 'LPPC':
           ct = float(LPPC_CT.get(g, 4.7))
@@ -8233,6 +8243,31 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
         row[f'TH {g}'] = th
         row[f'MTD {g}'] = mtd
         row[f'% {g}'] = f'{pct}%'
+        if kpi_type != 'LPPC':
+          _sum_ct += ct
+          _sum_th += th
+          _sum_mtd += mtd
+      if kpi_type == 'LPPC':
+        # LPPC Total: bình quân line/PC trên toàn bộ nhóm
+        pc_m = sum(lppc_pc_mtd[g].get(nv, 0) or 0 for g in groups)
+        ln_m = sum(lppc_lines_mtd[g].get(nv, 0) or 0 for g in groups)
+        pc_t = sum(lppc_pc_th[g].get(nv, 0) or 0 for g in groups)
+        ln_t = sum(lppc_lines_th[g].get(nv, 0) or 0 for g in groups)
+        mtd_t = round(ln_m / pc_m, 2) if pc_m else 0.0
+        th_t = round(ln_t / pc_t, 2) if pc_t else 0.0
+        # CT Total LPPC: bình quân CT các nhóm (tham chiếu)
+        ct_t = round(sum(float(LPPC_CT.get(g, 4.7)) for g in groups) / len(groups), 2)
+        pct_t = round(mtd_t / ct_t * 100, 1) if ct_t else 0.0
+        row['CT Total'] = ct_t
+        row['TH Total'] = th_t
+        row['MTD Total'] = mtd_t
+        row['% Total'] = f'{pct_t}%'
+      else:
+        pct_t = round(_sum_mtd / _sum_ct * 100, 1) if _sum_ct else 0.0
+        row['CT Total'] = _sum_ct
+        row['TH Total'] = _sum_th
+        row['MTD Total'] = _sum_mtd
+        row['% Total'] = f'{pct_t}%'
     rows.append(row)
 
   df_out = pd.DataFrame(rows)
@@ -8276,6 +8311,28 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
       tot[f'TH {g}'] = th
       tot[f'MTD {g}'] = mtd
       tot[f'% {g}'] = f'{pct}%'
+    if kpi_type == 'LPPC':
+      pc_m = sum(lppc_pc_mtd[g].get(nv, 0) or 0 for g in groups for nv in nv_list)
+      ln_m = sum(lppc_lines_mtd[g].get(nv, 0) or 0 for g in groups for nv in nv_list)
+      pc_t = sum(lppc_pc_th[g].get(nv, 0) or 0 for g in groups for nv in nv_list)
+      ln_t = sum(lppc_lines_th[g].get(nv, 0) or 0 for g in groups for nv in nv_list)
+      mtd_t = round(ln_m / pc_m, 2) if pc_m else 0.0
+      th_t = round(ln_t / pc_t, 2) if pc_t else 0.0
+      ct_t = round(sum(float(LPPC_CT.get(g, 4.7)) for g in groups) / len(groups), 2)
+      pct_t = round(mtd_t / ct_t * 100, 1) if ct_t else 0.0
+      tot['CT Total'] = ct_t
+      tot['TH Total'] = th_t
+      tot['MTD Total'] = mtd_t
+      tot['% Total'] = f'{pct_t}%'
+    else:
+      ct_t = float(df_out['CT Total'].sum()) if 'CT Total' in df_out.columns else sum(tot.get(f'CT {g}', 0) for g in groups)
+      th_t = float(df_out['TH Total'].sum()) if 'TH Total' in df_out.columns else sum(tot.get(f'TH {g}', 0) for g in groups)
+      mtd_t = float(df_out['MTD Total'].sum()) if 'MTD Total' in df_out.columns else sum(tot.get(f'MTD {g}', 0) for g in groups)
+      pct_t = round(mtd_t / ct_t * 100, 1) if ct_t else 0.0
+      tot['CT Total'] = ct_t
+      tot['TH Total'] = th_t
+      tot['MTD Total'] = mtd_t
+      tot['% Total'] = f'{pct_t}%'
   return pd.concat([df_out, pd.DataFrame([tot])], ignore_index=True)
 
 
