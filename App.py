@@ -7848,6 +7848,7 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
   cols = ['STT', 'Tên NVBH']
   for g in groups:
     cols += [f'CT {g}', f'TH {g}', f'MTD {g}', f'% {g}']
+  cols += ['CT Total', 'TH Total', 'MTD Total', '% Total']
   empty = pd.DataFrame(columns=cols)
   if not nv_list or df is None or getattr(df, 'empty', True):
     return empty
@@ -7912,6 +7913,7 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
   rows = []
   for nv in nv_list:
     row = {'Tên NVBH': nv}
+    _sum_ct = _sum_th = _sum_mtd = 0.0
     for g in groups:
       ct = float(ct_nv_g[g].get(nv, 0) or 0)
       th = float(th_nv_g[g].get(nv, 0) or 0)
@@ -7921,6 +7923,14 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
       row[f'TH {g}'] = th
       row[f'MTD {g}'] = mtd
       row[f'% {g}'] = f'{pct}%'
+      _sum_ct += ct
+      _sum_th += th
+      _sum_mtd += mtd
+    # Cột Total = tổng các nhóm
+    row['CT Total'] = _sum_ct
+    row['TH Total'] = _sum_th
+    row['MTD Total'] = _sum_mtd
+    row['% Total'] = f'{round(_sum_mtd / _sum_ct * 100, 1) if _sum_ct else 0.0}%'
     rows.append(row)
   df_out = pd.DataFrame(rows)
   if df_out.empty:
@@ -7940,6 +7950,13 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
     tot[f'TH {g}'] = th
     tot[f'MTD {g}'] = mtd
     tot[f'% {g}'] = f'{round(mtd / ct * 100, 1) if ct else 0.0}%'
+  ct_t = float(df_out['CT Total'].sum()) if 'CT Total' in df_out.columns else 0.0
+  th_t = float(df_out['TH Total'].sum()) if 'TH Total' in df_out.columns else 0.0
+  mtd_t = float(df_out['MTD Total'].sum()) if 'MTD Total' in df_out.columns else 0.0
+  tot['CT Total'] = ct_t
+  tot['TH Total'] = th_t
+  tot['MTD Total'] = mtd_t
+  tot['% Total'] = f'{round(mtd_t / ct_t * 100, 1) if ct_t else 0.0}%'
   return pd.concat([df_out, pd.DataFrame([tot])], ignore_index=True)
 
 
