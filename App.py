@@ -12412,7 +12412,11 @@ def render_html_table(df, freeze_cols=None):
               '% Hoàn Thành', '% TH', '% PC/VT OFF', '% PC/Plan ON', '% TH SO',
               '% TH Xanh', '% TH Vàng', '% Active',
           ]
-          or (isinstance(col, str) and col.strip().startswith('%'))
+          or (
+              isinstance(col, str)
+              and col.strip().startswith('%')
+              and col.strip() not in ('% thưởng', '% Thưởng', '%THUONG')
+          )
       )
 
       salary_cls, salary_style = salary_metric_style(_CURRENT_SALARY_KPI, col, val)
@@ -12449,17 +12453,19 @@ def render_html_table(df, freeze_cols=None):
               f'font-weight:900 !important;text-align:{align} !important;'
               f'white-space:nowrap;border-color:#2b6cb0 !important;">{val}</td>'
           )
-      elif str(col).strip() == 'Đạt nhiệm vụ' and not is_total:
+      elif str(col).strip() in ('Đạt nhiệm vụ', 'Đạt NV') and not is_total:
         _vs = str(val).strip()
-        if _vs in ('Có', 'CO', 'Yes', '1', '✓'):
+        # Chỉ tô màu chữ; giữ nền bảng như các cột khác
+        if _vs in ('Có', 'CO', 'Yes', '1', '✓', 'True'):
           _cstyle = 'color:#276749 !important;font-weight:800 !important;'
-        elif _vs in ('Không', 'KO', 'No', '0'):
+        elif _vs in ('Không', 'KO', 'No', '0', 'False'):
           _cstyle = 'color:#c53030 !important;font-weight:800 !important;'
         else:
-          _cstyle = ''
+          _cstyle = 'color:#1a202c !important;'
         html.append(
-            f'<td data-colored="1" style="{sticky}{_cstyle}'
-            f'text-align:center !important;white-space:nowrap;">{val}</td>'
+            f'<td style="background-color:{row_bg} !important;{_cstyle}'
+            f'text-align:center !important;white-space:nowrap;'
+            f'border:1px solid #bce2f5 !important;">{val}</td>'
         )
       elif is_sticky:
         align = 'center' if col == 'STT' else 'left'
@@ -12488,7 +12494,8 @@ def render_html_table(df, freeze_cols=None):
         )
         if col in ['Chỉ Tiêu Doanh Số', 'Doanh Số MTD', 'Thực Hiện Ngày', 'Actual', 'Target']:
           align = 'right'
-        if col in ['Tên NVBH', 'Tên NV', 'Tên CH', 'Tên KH']:
+        if col in ['Tên NVBH', 'Tên NV', 'Tên CH', 'Tên KH',
+                   'Brand Đã Mua', 'Brand Chưa mua', 'Tên nhóm']:
           align = 'left'
         html.append(
             f'<td style="{sticky}text-align:{align};white-space:nowrap;">{val}</td>'
@@ -13390,8 +13397,26 @@ def build_mbs_nv_summary_asof(df_detail, df_rpt, report_date, filter_nv=None, me
   rows = []
   for _, r in det.iterrows():
     ma = _norm_ma(r.get('Outlet Code', r.get('Mã KH', '')))
-    target = float(pd.to_numeric(r.get('Target', 0), errors='coerce') or 0)
+    def _to_num_mbs(x):
+      try:
+        if isinstance(x, (int, float)) and not (isinstance(x, float) and (x != x)):
+          return float(x)
+        s = str(x).strip().replace(' ', '').replace('%', '')
+        if not s or s.lower() in ('nan', 'none', ''):
+          return 0.0
+        # 1.500.000 hoặc 1.500.000,5 → bỏ dấu nghìn
+        if s.count('.') > 1 or (s.count('.') == 1 and s.count(',') == 0 and len(s.split('.')[-1]) == 3):
+          s = s.replace('.', '').replace(',', '.')
+        else:
+          s = s.replace(',', '.')
+        return float(s)
+      except Exception:
+        return 0.0
+    target = _to_num_mbs(r.get('Target', 0))
     actual = float(sales_map.get(ma, 0) or 0)
+    # Nếu Actual đã có sẵn trên detail (số) và không có RPT map → dùng detail
+    if actual <= 0:
+      actual = _to_num_mbs(r.get('Actual', 0))
     mission = str(r.get('Đạt nhiệm vụ', '')).strip() in ('Có', 'CO', 'Yes', '1', 'True', '✓')
     pct = (actual / target * 100) if target > 0 else (100.0 if actual > 0 else 0.0)
     dat_ds = pct >= 95 if t11 else actual >= target
@@ -22722,6 +22747,8 @@ if _nav == '📊 BÁO CÁO KPI':
           df_show = df_show.sort_values(
               ['Nhóm', 'Actual'], ascending=[True, False]
           ).reset_index(drop=True)
+        # Giữ bản số (Target/Actual) trước khi format — dùng cho bảng Tổng hợp NV
+        df_sum_src = df_show.copy()
         df_show.insert(0, 'STT', range(1, len(df_show) + 1))
         def _fmt_num_b(x):
           try:
@@ -22838,8 +22865,9 @@ if _nav == '📊 BÁO CÁO KPI':
                 ('BRAND_VIP', 'BRAND_VIP'),
                 ('BRAND_VIPDAISU', 'BRAND_VIP Đại sứ'),
             ):
+              _src_nv = df_sum_src if 'df_sum_src' in locals() else df_detail
               df_nv_sum = build_mbs_nv_summary_asof(
-                  df_show, df, report_date, filter_nv=filter_nv, member_filter=_mem
+                  _src_nv, df, report_date, filter_nv=filter_nv, member_filter=_mem
               )
               if df_nv_sum is None or df_nv_sum.empty:
                 st.info(f'Không có dữ liệu tổng hợp NV — {_lab}.')
@@ -22869,8 +22897,9 @@ if _nav == '📊 BÁO CÁO KPI':
                 'Chọn cột hiển thị phía trên chỉ áp dụng cho 2 bảng Tổng hợp theo NV'
             )
           else:
+            _src_nv = df_sum_src if 'df_sum_src' in locals() else df_detail
             df_nv_sum = build_mbs_nv_summary_asof(
-                df_show, df, report_date, filter_nv=filter_nv
+                _src_nv, df, report_date, filter_nv=filter_nv
             )
             if df_nv_sum is not None and not df_nv_sum.empty:
               st.markdown(
