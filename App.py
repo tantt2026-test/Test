@@ -225,6 +225,27 @@ st.markdown(
     .custom-kpi-table td {
         text-align: center !important;
     }
+    /* Đạt nhiệm vụ: chỉ màu chữ */
+    .custom-kpi-table td.mission-yes,
+    .custom-kpi-table tbody tr td.mission-yes {
+        color: #276749 !important;
+        font-weight: 800 !important;
+        background-color: inherit;
+    }
+    .custom-kpi-table td.mission-no,
+    .custom-kpi-table tbody tr td.mission-no {
+        color: #c53030 !important;
+        font-weight: 800 !important;
+        background-color: inherit;
+    }
+    .custom-kpi-table tbody tr:nth-child(even) td.mission-yes,
+    .custom-kpi-table tbody tr:nth-child(even) td.mission-no {
+        background-color: #e6f4fc !important;
+    }
+    .custom-kpi-table tbody tr:nth-child(odd) td.mission-yes,
+    .custom-kpi-table tbody tr:nth-child(odd) td.mission-no {
+        background-color: #ffffff !important;
+    }
     /* Cột % — tô màu theo rule KPI */
     .custom-kpi-table td.pct-red {
         background-color: #fed7d7 !important;
@@ -12453,17 +12474,21 @@ def render_html_table(df, freeze_cols=None):
               f'font-weight:900 !important;text-align:{align} !important;'
               f'white-space:nowrap;border-color:#2b6cb0 !important;">{val}</td>'
           )
-      elif str(col).strip() in ('Đạt nhiệm vụ', 'Đạt NV') and not is_total:
+      elif ('đạt nhiệm vụ' in str(col).strip().lower() or str(col).strip() == 'Đạt NV') and not is_total:
         _vs = str(val).strip()
-        # Chỉ tô màu chữ; giữ nền bảng như các cột khác
-        if _vs in ('Có', 'CO', 'Yes', '1', '✓', 'True'):
+        _vs_u = _vs.upper().replace(' ', '')
+        if _vs_u in ('CÓ', 'CO', 'YES', '1', '✓', 'TRUE') or _vs == 'Có':
+          _cls = 'mission-yes'
           _cstyle = 'color:#276749 !important;font-weight:800 !important;'
-        elif _vs in ('Không', 'KO', 'No', '0', 'False'):
+        elif _vs_u in ('KHÔNG', 'KHONG', 'KO', 'NO', '0', 'FALSE') or _vs == 'Không':
+          _cls = 'mission-no'
           _cstyle = 'color:#c53030 !important;font-weight:800 !important;'
         else:
-          _cstyle = 'color:#1a202c !important;'
+          _cls = ''
+          _cstyle = ''
         html.append(
-            f'<td style="background-color:{row_bg} !important;{_cstyle}'
+            f'<td data-colored="1" class="{_cls}" '
+            f'style="background-color:{row_bg} !important;{_cstyle}'
             f'text-align:center !important;white-space:nowrap;'
             f'border:1px solid #bce2f5 !important;">{val}</td>'
         )
@@ -13062,7 +13087,12 @@ def mbs_t11_eval(df_outlet, member_type, actual, target, col_brand='_brand', col
     brand_da_mua = ', '.join(da)
     brand_chua = ', '.join(chua)
   else:
+    # BRAND_VIP: tổng DS 4 nhãn >= 500.000; Brand đã mua = có phát sinh DS (>0)
     mission = ds4 >= 500000
+    da = [_disp.get(k, k.title()) for k in MBS_T11_BRANDS if by_norm.get(k, 0) > 0]
+    chua = [_disp.get(k, k.title()) for k in MBS_T11_BRANDS if by_norm.get(k, 0) <= 0]
+    brand_da_mua = ', '.join(da)
+    brand_chua = ', '.join(chua)
   pct = (actual / target * 100) if target > 0 else 0.0
   muc, rate = '', 0.0
   if mission:
