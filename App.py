@@ -12327,9 +12327,9 @@ def render_html_table(df, freeze_cols=None):
 
   # Auto detect freeze columns cho MBS detail
   if freeze_cols is None:
-    mbs_keys = ['Tên nhóm', 'Outlet Code', 'Tên CH']
-    if all(c in cols for c in mbs_keys):
-      freeze_cols = [c for c in ['STT', 'Tên nhóm', 'Outlet Code', 'Tên CH'] if c in cols]
+    mbs_keys = ['Outlet Code', 'Tên CH']
+    if all(c in cols for c in mbs_keys) and ('Tên nhóm' in cols or 'Member type' in cols):
+      freeze_cols = [c for c in ['STT', 'Outlet Code', 'Tên CH'] if c in cols]
     else:
       freeze_cols = [c for c in ['STT', 'Tên NVBH', 'Tên NV'] if c in cols]
 
@@ -12341,12 +12341,26 @@ def render_html_table(df, freeze_cols=None):
     cl = str(c).lower()
     if c == 'STT':
       return 48
-    if 'nhóm' in cl or 'nhom' in cl:
-      return 200
-    if 'outlet' in cl or 'mã' in cl or 'ma kh' in cl:
-      return 100
+    if c == 'Tên nhóm' or (('nhóm' in cl or 'nhom' in cl) and 'vip' not in cl):
+      # Nhóm 1, Nhóm 2… — hẹp
+      return 72
+    if 'outlet' in cl or c in ('Mã KH', 'Mã CH') or 'mã kh' in cl or 'ma kh' in cl:
+      # Auto scale theo nội dung dài nhất
+      max_len = 8
+      try:
+        for n in df[c].astype(str):
+          max_len = max(max_len, len(n))
+      except Exception:
+        pass
+      return max(90, min(180, max_len * 9 + 16))
     if c in ('Tên CH', 'Tên KH') or 'tên ch' in cl:
-      return 150
+      max_len = 12
+      try:
+        for n in df[c].astype(str):
+          max_len = max(max_len, len(n))
+      except Exception:
+        pass
+      return max(140, min(320, max_len * 9 + 20))
     if 'nvbh' in cl or 'tên nv' in cl:
       max_name = 12
       for n in df[c].astype(str):
@@ -12496,9 +12510,14 @@ def render_html_table(df, freeze_cols=None):
         align = 'center' if col == 'STT' else 'left'
         fw = '900' if is_total else '600'
         _cls = ' class="row-total-cell"' if is_total else ''
+        # Outlet Code / Tên CH: hiện đủ nội dung (không ellipsis)
+        if col in ('Outlet Code', 'Tên CH', 'Tên KH', 'Mã KH', 'Mã CH'):
+          _overflow = 'white-space:nowrap;'
+        else:
+          _overflow = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
         html.append(
             f'<td{_cls} style="{sticky}text-align:{align} !important;font-weight:{fw} !important;'
-            f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+            f'{_overflow}'
             f'border:1px solid {"#2b6cb0" if is_total else "#bce2f5"} !important;'
             f'background-color:{row_bg} !important;color:{row_fg} !important;">{val}</td>'
         )
@@ -22806,12 +22825,26 @@ if _nav == '📊 BÁO CÁO KPI':
               lambda x: (f'{float(x):.1f}%'.replace('.', ',') if float(x or 0) > 0 else '')
           )
         cols_show = [
-            'STT', 'Tên nhóm', 'Outlet Code', 'Tên CH', 'Tên NVBH',
+            'STT', 'Outlet Code', 'Tên CH', 'Tên NVBH',
             'Thứ VT', 'Member type', 'Actual',
             'Actual (Not Cancel/Pending)', 'Target', '% TH',
             'DS 4 nhãn', 'Đạt nhiệm vụ', 'Brand Đã Mua', 'Brand Chưa mua',
-            'Mức đạt', '% thưởng', 'Điểm thưởng dự kiến',
+            'Mức đạt', '% thưởng', 'Điểm thưởng dự kiến', 'Tên nhóm',
         ]
+        # Rút gọn Tên nhóm → Nhóm 1, Nhóm 2, ...
+        if 'Tên nhóm' in df_show.columns:
+          def _short_nhom(x):
+            s = str(x).strip()
+            import re
+            m = re.match(r'Nhóm\s*(\d+)', s, flags=re.IGNORECASE)
+            if m:
+              return f'Nhóm {m.group(1)}'
+            if 'Nhóm' in s and s.split()[0].lower() == 'nhóm':
+              return ' '.join(s.split()[:2])
+            return s
+          df_show['Tên nhóm'] = df_show['Tên nhóm'].map(_short_nhom)
+        elif 'Nhóm' in df_show.columns:
+          df_show['Tên nhóm'] = df_show['Nhóm'].map(lambda x: f'Nhóm {int(x)}' if str(x).isdigit() or isinstance(x, (int, float)) else str(x))
         df_html = df_show[[c for c in cols_show if c in df_show.columns]].copy()
         st.markdown(render_html_table(df_html), unsafe_allow_html=True)
         st.caption(f'Hiển thị: {len(df_show):,} / {total_kh:,} KH')
