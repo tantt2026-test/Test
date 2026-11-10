@@ -9894,7 +9894,7 @@ def build_combo_matrix(
 
 
 
-def build_vip_mch_chua_mua(mcp_df, filter_nv=None, f_thu_list=None, df_cat=None, df_brand=None, df_rpt=None, report_date=None):
+def build_vip_mch_chua_mua(mcp_df, filter_nv=None, f_thu_list=None, df_cat=None, df_brand=None, df_rpt=None, report_date=None, full_month=False):
   """Chi tiết KH VIP MCH (VIP3/VIP5/VIPSI) chưa phát sinh DS.
   DS ưu tiên từ RPT (01→ngày BC); fallback cột DS trên MCP.
   Chỉ tiêu = Target MBS Cat/Brand theo Mã KH. Member Type từ Cat/Brand; không có → 'KH Combo'.
@@ -9951,8 +9951,18 @@ def build_vip_mch_chua_mua(mcp_df, filter_nv=None, f_thu_list=None, df_cat=None,
     else:
       mcp = mcp[mcp[c_nv].astype(str).str.strip() == str(filter_nv).strip()]
 
-  if f_thu_list and c_thu:
-    mcp = filter_by_thu_multi(mcp, c_thu, list(f_thu_list))
+  # Lọc Ngày VT: theo f_thu_list; nếu xem theo ngày (không full_month) tự map weekday
+  _thu_use = list(f_thu_list) if f_thu_list else []
+  if (not full_month) and (not _thu_use) and report_date is not None and c_thu:
+    try:
+      _rd = report_date.date() if hasattr(report_date, 'date') else report_date
+      _rd = pd.Timestamp(_rd).date()
+      _thu_use = {0: ['2', '25'], 1: ['3', '36'], 2: ['4', '47'],
+                  3: ['5', '25'], 4: ['6', '36'], 5: ['7', '47']}.get(_rd.weekday(), [])
+    except Exception:
+      _thu_use = []
+  if _thu_use and c_thu:
+    mcp = filter_by_thu_multi(mcp, c_thu, list(_thu_use))
 
   def _nma(x):
     s = str(x).strip()
@@ -9972,7 +9982,10 @@ def build_vip_mch_chua_mua(mcp_df, filter_nv=None, f_thu_list=None, df_cat=None,
             rd = report_date.date() if hasattr(report_date, 'date') else report_date
             rd = pd.Timestamp(rd).date()
             _dd = pd.to_datetime(s['date'], errors='coerce')
-            s = s[_dd.notna() & (_dd.dt.date >= date(rd.year, rd.month, 1)) & (_dd.dt.date <= rd)]
+            if full_month:
+              s = s[_dd.notna() & (_dd.dt.date >= date(rd.year, rd.month, 1)) & (_dd.dt.date <= rd)]
+            else:
+              s = s[_dd.notna() & (_dd.dt.date == rd)]
           except Exception:
             pass
         if c_st:
@@ -10345,6 +10358,36 @@ def build_summary_table1(df, report_date, mcp_df, filter_nv=None, f_thu_list=Non
   lppc = _kpi_maps('LPPC')
   pc_on = _kpi_maps('PC_ON')
 
+  # PC BT TH = total PC phát sinh (OFF + ON), unique CH/ngày
+  try:
+    src_pc = df.copy() if df is not None else pd.DataFrame()
+    if not src_pc.empty and 'date' in src_pc.columns:
+      _dd = pd.to_datetime(src_pc['date'], errors='coerce')
+      if full_month:
+        src_pc = src_pc[_dd.notna() & (_dd.dt.date >= date(rd.year, rd.month, 1)) & (_dd.dt.date <= rd)].copy()
+      else:
+        src_pc = src_pc[_dd.notna() & (_dd.dt.date == rd)].copy()
+    c_nv_p = find_col(src_pc, ['Tên NVBH', 'SM Name', 'SM name']) if not src_pc.empty else None
+    c_ma_p = find_col(src_pc, ['Mã CH', 'Outlet_code', 'Outlet Code', 'Mã KH']) if not src_pc.empty else None
+    c_st_p = find_col(src_pc, ['Tình trạng đơn hàng', 'Trạng thái']) if not src_pc.empty else None
+    if c_st_p and not src_pc.empty:
+      src_pc = src_pc[~src_pc[c_st_p].astype(str).str.contains('hủy|huỷ|cancel', case=False, na=False)]
+    if not src_pc.empty and c_nv_p and c_ma_p:
+      src_pc = src_pc.copy()
+      src_pc['_nv'] = src_pc[c_nv_p].astype(str).str.strip()
+      src_pc['_ma'] = src_pc[c_ma_p].map(_nma)
+      if 'date' in src_pc.columns:
+        src_pc['_d'] = pd.to_datetime(src_pc['date'], errors='coerce').dt.date
+        # 1 PC = 1 CH / 1 ngày
+        pc_cnt = src_pc.drop_duplicates(['_nv', '_ma', '_d']).groupby('_nv').size().to_dict()
+      else:
+        pc_cnt = src_pc.drop_duplicates(['_nv', '_ma']).groupby('_nv').size().to_dict()
+      for nv, th_pc in pc_cnt.items():
+        ct0 = pc_bt.get(nv, (0, 0))[0]
+        pc_bt[nv] = (ct0, float(th_pc))
+  except Exception:
+    pass
+
   # LPPC day: TH from day data still via build_report on full month MTD is wrong —
   # use build_report with filtered day for TH only
   if not full_month:
@@ -10401,7 +10444,8 @@ def build_summary_table1(df, report_date, mcp_df, filter_nv=None, f_thu_list=Non
     for key, store in [('PC_BT', pc_bt), ('LPPC', lppc), ('PC_ON', pc_on)]:
       ct, th = store.get(nv, (0, 0))
       if key == 'LPPC':
-        row[f'CT {key}'] = round(float(ct), 2)
+        ct = 4.7  # CT LPPC luôn 4.7
+        row[f'CT {key}'] = 4.7
         row[f'TH {key}'] = round(float(th), 2)
       else:
         row[f'CT {key}'] = int(round(float(ct)))
@@ -10434,12 +10478,9 @@ def build_summary_table1(df, report_date, mcp_df, filter_nv=None, f_thu_list=Non
     ct = float(tot.get(f'CT {k}', 0) or 0)
     th = float(tot.get(f'TH {k}', 0) or 0)
     tot[f'% {k}'] = f'{round(th / ct * 100, 1) if ct else 0.0}%'
-  # LPPC Total: CT mặc định 4.7; TH = trung bình có trọng số theo PC (giống báo cáo LPPC)
-  try:
-    _moc_l = float(get_month_cfg().get('lppc_moc', 4.7) or 4.7)
-  except Exception:
-    _moc_l = 4.7
-  tot['CT LPPC'] = _moc_l
+  # LPPC Total: CT luôn 4.7 (target KPI); TH = TB các NV
+  _moc_l = 4.7
+  tot['CT LPPC'] = 4.7
   # TH LPPC team ≈ tổng (TH*proxy) / n — lấy trung bình các NV có TH>0, fallback mean
   try:
     ths = pd.to_numeric(df_out['TH LPPC'], errors='coerce').fillna(0)
@@ -10616,67 +10657,75 @@ def build_summary_table2(df, report_date, mcp_df, df_combo_off, df_combo_on, bra
   except Exception:
     pass
 
-  # ---- Hội Viên Tết từ brand_df (Member type) + lọc Thứ ----
+  # ---- Hội Viên Tết 2027: lấy từ build_mbs_brand_report + lọc Ngày VT ----
   hv_ct = {'BRAND_VIP': {}, 'BRAND_VIPDAISU': {}}
   hv_th = {'BRAND_VIP': {}, 'BRAND_VIPDAISU': {}}
   try:
-    b = brand_df.copy() if brand_df is not None and not getattr(brand_df, 'empty', True) else pd.DataFrame()
-    if not b.empty:
-      try:
-        b = _norm_brand_cols(b)
-      except Exception:
-        pass
-      c_nv = find_col(b, ['SM Name', 'SM name', 'Tên NVBH', 'Nhân viên'])
-      c_ma = find_col(b, ['Outlet Code', 'Outlet_code', 'Mã CH', 'Mã KH'])
-      c_mt = find_col(b, ['Member type', 'Member Type', 'Phân loại KH', 'MEMBER_TYPE'])
-      c_thu = find_col(b, ['Thứ', 'Thứ VT', 'Frequency', 'Tần suất'])
-      # Map Thứ từ MCP nếu thiếu
-      if (not c_thu or b[c_thu].isna().all()) and mcp_df is not None and not mcp_df.empty and c_ma:
-        c_m_ma = find_col(mcp_df, ['Outlet_code', 'Outlet Code', 'Mã CH'])
-        c_m_thu = find_col(mcp_df, ['Thứ', 'Frequency', 'Tần suất', 'Thứ VT'])
-        if c_m_ma and c_m_thu:
-          mp = mcp_df[[c_m_ma, c_m_thu]].copy()
-          mp['_ma'] = mp[c_m_ma].map(_nma)
-          thu_map = mp.drop_duplicates('_ma').set_index('_ma')[c_m_thu].astype(str).to_dict()
-          b = b.copy()
-          b['_thu_mcp'] = b[c_ma].map(_nma).map(thu_map)
-          c_thu = '_thu_mcp'
-      c_mtd = find_col(b, [
-          'Doanh số thực đạt của CAT/BRAND', 'Doanh số thực đạt của brand',
-          'Doanh số thực đạt brand', 'Doanh số Paid/Invoiced theo từng nhãn hàng',
-          'Doanh số thực đạt của CAT/BRAND(Not Cancel/Pending)',
-      ])
-      if c_nv and c_ma:
-        b = b.copy()
-        b['_nv'] = b[c_nv].astype(str).str.strip()
-        b['_ma'] = b[c_ma].map(_nma)
-        if c_mt:
-          b['_mt'] = b[c_mt].astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('_', '', regex=False)
+    rb = build_mbs_brand_report(brand_df, filter_nv=filter_nv, mcp_df=mcp_df)
+    df_det = rb.get('df_detail') if isinstance(rb, dict) else None
+    if df_det is not None and not getattr(df_det, 'empty', True):
+      det = df_det.copy()
+      # Lọc Ngày VT khi không Full Tháng
+      if not full_month and 'Thứ VT' in det.columns:
+        thu_by_wd = {0: {'2', '25'}, 1: {'3', '36'}, 2: {'4', '47'},
+                     3: {'5', '25'}, 4: {'6', '36'}, 5: {'7', '47'}}
+        valid = thu_by_wd.get(rd.weekday(), set())
+        if thu:
+          # Ưu tiên bộ lọc Thứ trên Summary nếu user chọn
+          valid = set(str(x).strip() for x in thu)
+        det = det[det['Thứ VT'].astype(str).str.strip().isin(valid)]
+      # CH đã mua: Full = Actual/DS > 0; Ngày = có ĐH đúng ngày BC
+      bought_day = set()
+      if not full_month and df is not None and not getattr(df, 'empty', True):
+        try:
+          s = df.copy()
+          if 'date' in s.columns:
+            _dd = pd.to_datetime(s['date'], errors='coerce')
+            s = s[_dd.notna() & (_dd.dt.date == rd)]
+          c_st = find_col(s, ['Tình trạng đơn hàng', 'Trạng thái'])
+          if c_st:
+            s = s[~s[c_st].astype(str).str.contains('hủy|huỷ|cancel', case=False, na=False)]
+          c_ch = find_col(s, ['Mã CH', 'Outlet Code', 'Outlet_code', 'Mã KH'])
+          if c_ch is not None:
+            bought_day = set(s[c_ch].map(_nma).tolist())
+        except Exception:
+          bought_day = set()
+      for mt_key in ('BRAND_VIP', 'BRAND_VIPDAISU'):
+        if 'Member type' in det.columns:
+          mt_s = det['Member type'].astype(str).str.upper().str.replace(' ', '', regex=False).str.replace('_', '', regex=False)
+          if mt_key == 'BRAND_VIPDAISU':
+            mask = mt_s.str.contains('DAISU|ĐẠI|VIPDAISU|BRANDVIPDAISU', na=False, regex=True)
+          else:
+            mask = mt_s.str.contains('VIP|BRANDVIP', na=False, regex=True) & ~mt_s.str.contains('DAISU|ĐẠI', na=False, regex=True)
+          sub = det[mask].copy()
         else:
-          b['_mt'] = 'BRANDVIP'
-        if c_thu and thu and not full_month:
-          b = filter_by_thu_multi(b, c_thu, thu)
-        if nv_selected(filter_nv):
-          b = filter_df_by_nv(b, '_nv', filter_nv)
-        mask_daisu = b['_mt'].str.contains('DAISU|DAI SU|ĐẠI|VIPDAISU|BRANDVIPDAISU', na=False, regex=True)
-        mask_vip = b['_mt'].str.contains('VIP|BRANDVIP', na=False, regex=True) & ~mask_daisu
-        if not mask_vip.any() and not mask_daisu.any():
-          mask_vip = pd.Series(True, index=b.index)
-        for mt_key, mask in (('BRAND_VIP', mask_vip), ('BRAND_VIPDAISU', mask_daisu)):
-          sub = b[mask]
-          if sub.empty:
-            continue
-          hv_ct[mt_key] = sub.drop_duplicates(['_nv', '_ma']).groupby('_nv')['_ma'].nunique().to_dict()
-          if c_mtd:
-            sub2 = sub.copy()
-            sub2['_m'] = pd.to_numeric(sub2[c_mtd], errors='coerce').fillna(0)
-            bought = sub2[sub2['_m'] > 0]
+          sub = det.copy()
+        if sub.empty:
+          continue
+        sub['_nv'] = sub['Tên NVBH'].astype(str).str.strip() if 'Tên NVBH' in sub.columns else ''
+        sub['_ma'] = sub.get('Outlet Code', sub.get('Mã KH', pd.Series(dtype=str))).map(_nma)
+        hv_ct[mt_key] = sub.drop_duplicates(['_nv', '_ma']).groupby('_nv')['_ma'].nunique().to_dict()
+        if full_month:
+          # TH full: KH có Actual > 0 hoặc Đạt NV / đã mua trên detail
+          if 'Actual' in sub.columns:
+            sub['_act'] = pd.to_numeric(sub['Actual'], errors='coerce').fillna(0)
+            bought = sub[sub['_act'] > 0]
+          elif 'Đạt nhiệm vụ' in sub.columns:
+            bought = sub[sub['Đạt nhiệm vụ'].astype(str).str.strip().isin(['Có', 'CO', 'Yes', '1', '✓'])]
+          else:
+            bought = sub.iloc[0:0]
+          if not bought.empty:
+            hv_th[mt_key] = bought.drop_duplicates(['_nv', '_ma']).groupby('_nv')['_ma'].nunique().to_dict()
+        else:
+          # TH ngày: CH lịch VT ngày + có ĐH ngày BC
+          if bought_day:
+            bought = sub[sub['_ma'].isin(bought_day)]
             if not bought.empty:
               hv_th[mt_key] = bought.drop_duplicates(['_nv', '_ma']).groupby('_nv')['_ma'].nunique().to_dict()
   except Exception:
     pass
 
-  nv_set = set()
+    nv_set = set()
   for dmap in (aso_x, aso_v, off_ct, on_ct, off_th, on_th,
                hv_ct['BRAND_VIP'], hv_ct['BRAND_VIPDAISU'],
                hv_th['BRAND_VIP'], hv_th['BRAND_VIPDAISU']):
@@ -21710,12 +21759,14 @@ if _nav == '📊 BÁO CÁO KPI':
       df_vip_chua = build_vip_mch_chua_mua(
           mcp, filter_nv=filter_nv, f_thu_list=f_thu_sum,
           df_cat=df_cat, df_brand=df_brand, df_rpt=df, report_date=report_date,
+          full_month=bool(_sum_full),
       )
-      # Nếu lọc Thứ làm rỗng → fallback không lọc Thứ
+      # Nếu lọc Thứ làm rỗng → fallback không lọc Thứ (vẫn giữ full_month)
       if (df_vip_chua is None or df_vip_chua.empty) and f_thu_sum:
         df_vip_chua = build_vip_mch_chua_mua(
             mcp, filter_nv=filter_nv, f_thu_list=None,
             df_cat=df_cat, df_brand=df_brand, df_rpt=df, report_date=report_date,
+            full_month=bool(_sum_full),
         )
     except Exception as e:
       df_vip_chua = pd.DataFrame()
