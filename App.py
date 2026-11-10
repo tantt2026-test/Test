@@ -10430,10 +10430,26 @@ def build_summary_table1(df, report_date, mcp_df, filter_nv=None, f_thu_list=Non
     ct = float(tot.get(f'CT {g}', 0) or 0)
     th = float(tot.get(f'TH {g}', 0) or 0)
     tot[f'% {g}'] = f'{round(th / ct * 100, 1) if ct else 0.0}%'
-  for k in ('DS', 'PC_BT', 'LPPC', 'PC_ON'):
+  for k in ('DS', 'PC_BT', 'PC_ON'):
     ct = float(tot.get(f'CT {k}', 0) or 0)
     th = float(tot.get(f'TH {k}', 0) or 0)
     tot[f'% {k}'] = f'{round(th / ct * 100, 1) if ct else 0.0}%'
+  # LPPC Total: CT mặc định 4.7; TH = trung bình có trọng số theo PC (giống báo cáo LPPC)
+  try:
+    _moc_l = float(get_month_cfg().get('lppc_moc', 4.7) or 4.7)
+  except Exception:
+    _moc_l = 4.7
+  tot['CT LPPC'] = _moc_l
+  # TH LPPC team ≈ tổng (TH*proxy) / n — lấy trung bình các NV có TH>0, fallback mean
+  try:
+    ths = pd.to_numeric(df_out['TH LPPC'], errors='coerce').fillna(0)
+    tot['TH LPPC'] = round(float(ths[ths > 0].mean()) if (ths > 0).any() else float(ths.mean()), 2)
+  except Exception:
+    tot['TH LPPC'] = round(float(df_out['TH LPPC'].mean()), 2) if 'TH LPPC' in df_out.columns else 0
+  try:
+    tot['% LPPC'] = f'{round(float(tot["TH LPPC"]) / _moc_l * 100, 1)}%'
+  except Exception:
+    tot['% LPPC'] = '0%'
   return pd.concat([df_out, pd.DataFrame([tot])], ignore_index=True)
 
 
@@ -10528,8 +10544,44 @@ def build_summary_table2(df, report_date, mcp_df, df_combo_off, df_combo_on, bra
     except Exception:
       pass
 
-  # ---- Combo: build_combo_matrix ----
-  off_ct = off_th = on_ct = on_th = {}
+  # ---- Combo CT: DSKH Combo + lịch VT ngày BC; Full = total DS theo NV ----
+  # TH: link build_combo_matrix (Phát sinh Ngày / MTD)
+  def _combo_ct_from_master(master, channel_label):
+    """CT = số CH trong DS Combo có lịch VT khớp ngày BC (hoặc full list nếu full_month)."""
+    out = {}
+    if master is None or getattr(master, 'empty', True):
+      return out
+    c_nv = find_col(master, ['Tên NV', 'Tên NVBH', 'SM name', 'SM Name', 'Nhân viên'])
+    c_ma = find_col(master, ['outlet_code', 'Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
+    if not (c_nv and c_ma):
+      return out
+    sub = master.copy()
+    sub['_nv'] = sub[c_nv].astype(str).str.strip()
+    sub['_ma'] = sub[c_ma].map(_nma)
+    # Map Thứ từ master hoặc MCP
+    c_thu_m = find_col(sub, ['Thứ', 'Thứ VT', 'Frequency', 'Tần suất'])
+    if mcp_df is not None and not getattr(mcp_df, 'empty', True):
+      c_m_ma = find_col(mcp_df, ['Outlet_code', 'Outlet Code', 'Mã CH', 'Mã KH'])
+      c_m_thu = find_col(mcp_df, ['Thứ', 'Frequency', 'Tần suất', 'Thứ VT'])
+      if c_m_ma and c_m_thu:
+        mp = mcp_df[[c_m_ma, c_m_thu]].copy()
+        mp['_ma'] = mp[c_m_ma].map(_nma)
+        thu_map = mp.drop_duplicates('_ma').set_index('_ma')[c_m_thu].astype(str).to_dict()
+        sub['_thu'] = sub['_ma'].map(thu_map)
+        if c_thu_m:
+          sub['_thu'] = sub['_thu'].fillna(sub[c_thu_m].astype(str))
+        c_thu_m = '_thu'
+    if not full_month and c_thu_m and thu:
+      sub = filter_by_thu_multi(sub, c_thu_m, thu)
+    if sub is None or sub.empty:
+      return out
+    if nv_selected(filter_nv):
+      sub = filter_df_by_nv(sub, '_nv', filter_nv)
+    return sub.drop_duplicates(['_nv', '_ma']).groupby('_nv')['_ma'].nunique().to_dict()
+
+  off_ct = _combo_ct_from_master(df_combo_off, 'OFF')
+  on_ct = _combo_ct_from_master(df_combo_on, 'ON')
+  off_th, on_th = {}, {}
   try:
     df_c, _, _ = build_combo_matrix(
         df, report_date, df_combo_off, df_combo_on, filter_nv,
@@ -10540,10 +10592,8 @@ def build_summary_table2(df, report_date, mcp_df, df_combo_off, df_combo_on, bra
       nc = 'Tên NVBH' if 'Tên NVBH' in df_c.columns else ('Tên NV' if 'Tên NV' in df_c.columns else None)
       if nc:
         body = df_c[~df_c[nc].astype(str).str.upper().str.contains('TOTAL|TỔNG|SS ', na=False, regex=True)]
-        off_ct, off_th, on_ct, on_th = {}, {}, {}, {}
         for _, r in body.iterrows():
           nv = str(r[nc]).strip()
-          # CT = Target list size; full month uses Target, day may use MT Ngày target
           def _gi(*names):
             for n in names:
               if n in body.columns:
@@ -10553,18 +10603,18 @@ def build_summary_table2(df, report_date, mcp_df, df_combo_off, df_combo_on, bra
                   return 0
             return 0
           if full_month:
-            off_ct[nv] = _gi('Target (OFF)', 'KH Combo OFF')
-            on_ct[nv] = _gi('Target (ON)', 'KH Combo ON')
             off_th[nv] = _gi('MTD (OFF)', 'Đã Mua (OFF)')
             on_th[nv] = _gi('MTD (ON)', 'Đã Mua (ON)')
+            # CT full: nếu master rỗng vẫn lấy Target từ matrix
+            if nv not in off_ct:
+              off_ct[nv] = _gi('Target (OFF)', 'KH Combo OFF')
+            if nv not in on_ct:
+              on_ct[nv] = _gi('Target (ON)', 'KH Combo ON')
           else:
-            # CT ngày = CH lịch VT trong DS Combo (MT Ngày target nếu có, else Target)
-            off_ct[nv] = _gi('MT Ngày (OFF)', 'Target (OFF)')
-            on_ct[nv] = _gi('MT Ngày (ON)', 'Target (ON)')
             off_th[nv] = _gi('Phát sinh Ngày (OFF)', 'MTD (OFF)')
             on_th[nv] = _gi('Phát sinh Ngày (ON)', 'MTD (ON)')
   except Exception:
-    off_ct = off_th = on_ct = on_th = {}
+    pass
 
   # ---- Hội Viên Tết từ brand_df (Member type) + lọc Thứ ----
   hv_ct = {'BRAND_VIP': {}, 'BRAND_VIPDAISU': {}}
@@ -10811,24 +10861,31 @@ def render_summary_split_html(df, title='', money_cols=None, header_groups=None)
         continue
       v = r.get(c, '')
       style = ''
-      cls = ''
+      cls_attr = ''
+      is_pct_col = str(c).startswith('%')
+      pct_val = None
+      if is_pct_col or (isinstance(v, str) and str(v).strip().endswith('%')):
+        try:
+          pct_val = float(str(v).replace('%', '').replace(',', '.').strip())
+          is_pct_col = True
+        except Exception:
+          pct_val = None
       if is_tot:
         # Total: nền xanh chữ trắng — KHÔNG tô màu %
         style = (
             'background-color:#1a365d !important;color:#ffffff !important;'
             'font-weight:900 !important;'
         )
-      elif isinstance(v, str) and v.endswith('%'):
-        try:
-          pct = float(str(v).replace('%', '').replace(',', '.'))
-          bg = color_pct_bg(pct, moc=100.0)
-          if bg:
-            style = bg  # đã gồm background + color + font-weight
-            cls = ' data-colored="1"'
-        except Exception:
-          pass
-      if isinstance(v, str) and v.endswith('%'):
-        cell = v
+        cls_attr = 'class="row-total-cell"'
+      elif is_pct_col and pct_val is not None:
+        pc = color_pct_class(pct_val, moc=100.0) or ''
+        bg = color_pct_bg(pct_val, moc=100.0) or ''
+        style = bg
+        cls_attr = f'class="{pc}" data-colored="1"' if pc else 'data-colored="1"'
+      if is_pct_col:
+        cell = v if isinstance(v, str) and str(v).endswith('%') else (
+            f'{pct_val}%' if pct_val is not None else str(v)
+        )
       elif c in money_cols or c in ('CT DS', 'TH DS'):
         try:
           cell = f'{int(round(float(v))):,}'.replace(',', '.')
@@ -10842,7 +10899,9 @@ def render_summary_split_html(df, title='', money_cols=None, header_groups=None)
             cell = str(v)
         except Exception:
           cell = str(v)
-      html.append(f'<td style="text-align:center;{style}"{cls}>{cell}</td>')
+      html.append(
+          f'<td {cls_attr} style="text-align:center;border:1px solid #bce2f5;{style}">{cell}</td>'
+      )
     html.append('</tr>')
   html.append('</tbody></table></div>')
   return ''.join(html)
