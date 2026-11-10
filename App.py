@@ -12449,6 +12449,18 @@ def render_html_table(df, freeze_cols=None):
               f'font-weight:900 !important;text-align:{align} !important;'
               f'white-space:nowrap;border-color:#2b6cb0 !important;">{val}</td>'
           )
+      elif str(col).strip() == 'Đạt nhiệm vụ' and not is_total:
+        _vs = str(val).strip()
+        if _vs in ('Có', 'CO', 'Yes', '1', '✓'):
+          _cstyle = 'color:#276749 !important;font-weight:800 !important;'
+        elif _vs in ('Không', 'KO', 'No', '0'):
+          _cstyle = 'color:#c53030 !important;font-weight:800 !important;'
+        else:
+          _cstyle = ''
+        html.append(
+            f'<td data-colored="1" style="{sticky}{_cstyle}'
+            f'text-align:center !important;white-space:nowrap;">{val}</td>'
+        )
       elif is_sticky:
         align = 'center' if col == 'STT' else 'left'
         fw = '900' if is_total else '600'
@@ -12990,17 +13002,58 @@ def mbs_t11_eval(df_outlet, member_type, actual, target, col_brand='_brand', col
   Chinsu, Kokomi, Chanté:
     VIP: tổng DS 4 nhãn >= 500.000 | VIP Đại sứ: mua đủ 4 nhãn, mỗi nhãn >= 150.000
     Đạt chỉ tiêu DS nền tảng 95% / 100% / 105% → thưởng 1,2% / 1,5% / 2% DS thực đạt.
-  Trả về (đạt nhiệm vụ, DS 4 nhãn, mức, % thưởng, điểm thưởng dự kiến)."""
+  Trả về (đạt nhiệm vụ, DS 4 nhãn, mức, % thưởng, điểm thưởng, brand_da_mua, brand_chua_mua).
+  brand_da_mua / brand_chua_mua chỉ áp dụng BRAND_VIPDAISU (mốc 150.000/nhãn); BRAND_VIP = ''.
+  """
+  _disp = {
+      'chanté': 'Chanté', 'chante': 'Chanté',
+      'chinsu': 'Chinsu', 'kokomi': 'Kokomi',
+      'nam ngư': 'Nam Ngư', 'nam ngu': 'Nam Ngư',
+  }
   b = df_outlet[col_brand].astype(str).str.strip().str.lower()
   act = pd.to_numeric(df_outlet[col_actual], errors='coerce').fillna(0)
   by_brand = act.groupby(b).sum()
-  ds4 = float(sum(by_brand.get(k, 0) for k in MBS_T11_BRANDS))
-  if str(member_type).strip().upper().replace(' ', '') == 'BRAND_VIPDAISU':
-    # VIP Đại sứ: 4 nhãn phải được phân loại FOCUS, mỗi nhãn >= 150.000
+  # Gộp biến thể tên nhãn về key chuẩn
+  by_norm = {k: 0.0 for k in MBS_T11_BRANDS}
+  for bk, bv in by_brand.items():
+    key = str(bk).strip().lower()
+    matched = None
+    for std in MBS_T11_BRANDS:
+      if std in key or key in std:
+        matched = std
+        break
+    if matched is None:
+      for alias, disp in _disp.items():
+        if alias in key:
+          # map display back to MBS_T11 key
+          for std in MBS_T11_BRANDS:
+            if _disp.get(std, std) == disp or std.replace('é', 'e') in alias:
+              matched = std
+              break
+          break
+    if matched:
+      by_norm[matched] = by_norm.get(matched, 0) + float(bv)
+  ds4 = float(sum(by_norm.values()))
+  mt = str(member_type).strip().upper().replace(' ', '')
+  brand_da_mua, brand_chua = '', ''
+  if mt == 'BRAND_VIPDAISU':
+    # VIP Đại sứ: 4 nhãn FOCUS, mỗi nhãn >= 150.000
+    by_use = dict(by_norm)
     if col_loai in df_outlet.columns:
       foc = df_outlet[col_loai].astype(str).str.upper().str.contains('FOCUS', na=False)
-      by_brand = act[foc].groupby(b[foc]).sum()
-    mission = all(by_brand.get(k, 0) >= 150000 for k in MBS_T11_BRANDS)
+      by_f = act[foc].groupby(b[foc]).sum()
+      by_use = {k: 0.0 for k in MBS_T11_BRANDS}
+      for bk, bv in by_f.items():
+        key = str(bk).strip().lower()
+        for std in MBS_T11_BRANDS:
+          if std in key or key in std:
+            by_use[std] = by_use.get(std, 0) + float(bv)
+            break
+    mission = all(by_use.get(k, 0) >= 150000 for k in MBS_T11_BRANDS)
+    da = [_disp.get(k, k.title()) for k in MBS_T11_BRANDS if by_use.get(k, 0) >= 150000]
+    chua = [_disp.get(k, k.title()) for k in MBS_T11_BRANDS if by_use.get(k, 0) < 150000]
+    brand_da_mua = ', '.join(da)
+    brand_chua = ', '.join(chua)
   else:
     mission = ds4 >= 500000
   pct = (actual / target * 100) if target > 0 else 0.0
@@ -13010,7 +13063,7 @@ def mbs_t11_eval(df_outlet, member_type, actual, target, col_brand='_brand', col
       if pct >= lim:
         muc, rate = name, r
         break
-  return mission, ds4, muc, rate, round(actual * rate / 100)
+  return mission, ds4, muc, rate, round(actual * rate / 100), brand_da_mua, brand_chua
 
 
 def render_mbs_pie_chart(df_show, title='Tỷ lệ KH theo Nhóm', height=380):
@@ -13747,7 +13800,7 @@ def build_mbs_brand_report(df_brand, filter_nv=None, mcp_df=None):
     df_out = df[df['_ma'] == ma]
     t11 = is_mbs_t11_member(member)
     if t11:
-      has_mission, ds4, muc, rate, diem = mbs_t11_eval(df_out, member, actual, target)
+      has_mission, ds4, muc, rate, diem, brand_da_mua, brand_chua = mbs_t11_eval(df_out, member, actual, target)
       dat_ds = pct >= 95  # Mức 1 = 95% chỉ tiêu
     else:
       has_mission = check_mbs_mission(df_out, member, col_actual='_actual')
@@ -13769,6 +13822,8 @@ def build_mbs_brand_report(df_brand, filter_nv=None, mcp_df=None):
       nhom = 11 - nhom
       nhom_name = mbs_group_meta(True)[nhom][0]
 
+    if not t11:
+      brand_da_mua, brand_chua = '', ''
     rows.append({
         'Outlet Code': ma,
         'Tên CH': ten_by_outlet.get(ma, '') if len(ten_by_outlet) else '',
@@ -13780,6 +13835,8 @@ def build_mbs_brand_report(df_brand, filter_nv=None, mcp_df=None):
         'Target': target,
         '% TH': round(pct, 1),
         'Đạt nhiệm vụ': 'Có' if has_mission else 'Không',
+        'Brand Đã Mua': brand_da_mua if t11 else '',
+        'Brand Chưa mua': brand_chua if t11 else '',
         'Nhóm': nhom,
         'Tên nhóm': nhom_name,
         **({'DS 4 nhãn': ds4, 'Mức đạt': muc, '% thưởng': rate,
@@ -22695,7 +22752,8 @@ if _nav == '📊 BÁO CÁO KPI':
             'STT', 'Tên nhóm', 'Outlet Code', 'Tên CH', 'Tên NVBH',
             'Thứ VT', 'Member type', 'Actual',
             'Actual (Not Cancel/Pending)', 'Target', '% TH',
-            'DS 4 nhãn', 'Đạt nhiệm vụ', 'Mức đạt', '% thưởng', 'Điểm thưởng dự kiến',
+            'DS 4 nhãn', 'Đạt nhiệm vụ', 'Brand Đã Mua', 'Brand Chưa mua',
+            'Mức đạt', '% thưởng', 'Điểm thưởng dự kiến',
         ]
         df_html = df_show[[c for c in cols_show if c in df_show.columns]].copy()
         st.markdown(render_html_table(df_html), unsafe_allow_html=True)
