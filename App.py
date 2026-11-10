@@ -182,11 +182,14 @@ st.markdown(
         padding: 5px 7px !important;
         font-size: clamp(14px, 1.05vw + 11px, 17px) !important;
         line-height: 1.3 !important;
+        font-weight: 800 !important; /* chữ in đậm toàn bảng — giống % Tạo Mới Kênh ON */
     }
     .custom-kpi-table td[style*="text-align:left"],
     .custom-kpi-table td[style*="text-align: left"] {
         font-size: clamp(14px, 1.1vw + 11px, 17px) !important;
+        font-weight: 800 !important;
     }
+    /* Rule màu cột % giữ nguyên (pct-red/orange/green/yellow/purple) */
     @media (max-width: 768px) {
         .custom-kpi-table,
         .custom-kpi-table th,
