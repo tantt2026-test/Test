@@ -9231,7 +9231,11 @@ def build_combo_matrix(
   except Exception:
     rd = report_date
   if not df_mtd.empty and 'date' in df_mtd.columns:
-    df_mtd = df_mtd[df_mtd['date'] <= rd].copy()
+    try:
+      _dates = pd.to_datetime(df_mtd['date'], errors='coerce')
+      df_mtd = df_mtd[_dates.notna() & (_dates.dt.date <= pd.Timestamp(rd).date())].copy()
+    except Exception:
+      df_mtd = df_mtd[df_mtd['date'] <= rd].copy()
 
   if nv_selected(filter_nv):
     if not df_mtd.empty and 'Tên NVBH' in df_mtd.columns:
@@ -9340,15 +9344,26 @@ def build_combo_matrix(
   combo_df = tag_combo_orders_t10(df_mtd, mcp_df=mcp_df)
 
   def _maps_from_combo(combo_sub, report_date):
+    """MTD CH / Suất MTD = unique CH/ĐH có ĐH Combo từ 01 → ngày BC (tính lại theo ngày chọn).
+    Phát sinh Ngày / Suất Ngày = đúng ngày BC.
+    """
     empty = {}
     if combo_sub is None or combo_sub.empty or 'Tên NVBH' not in combo_sub.columns:
       return empty, empty, empty, empty
     rd0 = report_date.date() if hasattr(report_date, 'date') else report_date
+    try:
+      rd0 = pd.Timestamp(rd0).date()
+    except Exception:
+      pass
     dsub = combo_sub.copy()
     if 'date' in dsub.columns:
       dsub['_d'] = pd.to_datetime(dsub['date'], errors='coerce').dt.date
+      # Chỉ lấy đến ngày BC đang chọn xem
+      dsub = dsub[dsub['_d'].notna() & (dsub['_d'] <= rd0)].copy()
     else:
       dsub['_d'] = rd0
+    if dsub.empty:
+      return empty, empty, empty, empty
     ma_ch_col = None
     for c in ['Mã CH', 'Outlet Code', 'Outlet_code', 'OutletCode', 'Mã KH', 'Poscode']:
       if c in dsub.columns:
@@ -9363,9 +9378,11 @@ def build_combo_matrix(
     if ma_ch_col is not None:
       dsub['_ma_ch'] = dsub[ma_ch_col].map(_norm_code)
       dsub = dsub[dsub['_ma_ch'].notna() & ~dsub['_ma_ch'].isin(('', 'nan', 'None', 'none'))]
+      # MTD CH = unique CH có mua Combo trong 01 → ngày BC
       mtd_ch = dsub.groupby('Tên NVBH')['_ma_ch'].nunique().to_dict()
       first = dsub.groupby(['Tên NVBH', '_ma_ch'])['_d'].min().reset_index()
       first.columns = ['Tên NVBH', '_ma_ch', 'first_date']
+      # Phát sinh Ngày = CH mua Combo lần đầu đúng ngày BC
       ngay_ch = (
           first[first['first_date'] == rd0]
           .groupby('Tên NVBH')['_ma_ch'].nunique().to_dict()
