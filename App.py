@@ -8078,6 +8078,12 @@ def build_kpi_vip_matrix(df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=No
     elif c_l10 and _l1f == 'ON':
       mcp0 = mcp0[mcp0[c_l10].astype(str).str.contains('On', case=False, na=False)].copy()
 
+    # Lọc F2 tuần chẵn/lẻ (cột ODD_WEEK trên MCP)
+    try:
+      mcp0 = filter_by_odd_week(mcp0, report_date)
+    except Exception:
+      pass
+
     freq_map, nv_of = {}, {}
     if c_ma0 and c_nv0:
       for _, r in mcp0.iterrows():
@@ -10198,7 +10204,12 @@ def build_summary_table1(df, report_date, mcp_df, filter_nv=None, f_thu_list=Non
     return s[:-2] if s.endswith('.0') else s
 
   try:
-    _, ma_to_g, nv_list0, nv_ma, _, ma_to_freq = _vip_base_maps(mcp_df, filter_nv, channel='ALL')
+    _mcp_cp = mcp_df
+    try:
+      _mcp_cp = filter_by_odd_week(mcp_df, report_date) if mcp_df is not None else mcp_df
+    except Exception:
+      _mcp_cp = mcp_df
+    _, ma_to_g, nv_list0, nv_ma, _, ma_to_freq = _vip_base_maps(_mcp_cp, filter_nv, channel='ALL')
   except Exception:
     ma_to_g, nv_list0, nv_ma, ma_to_freq = {}, [], {}, {}
 
@@ -10783,7 +10794,7 @@ def build_summary_table2(df, report_date, mcp_df, df_combo_off, df_combo_on, bra
   except Exception:
     pass
 
-    nv_set = set()
+  nv_set = set()
   for dmap in (aso_x, aso_v, off_ct, on_ct, off_th, on_th,
                hv_ct.get('BRAND_VIP', {}), hv_ct.get('BRAND_VIPDAISU', {}),
                hv_th.get('BRAND_VIP', {}), hv_th.get('BRAND_VIPDAISU', {})):
