@@ -11049,6 +11049,168 @@ def render_summary_html_table(df, selected_metrics):
 
 
 
+
+def render_aso_all_html(df):
+  """Bảng ASO ALL — header 2 dòng:
+  Hàng 1: Total MCP | MCP Kênh OFF | MCP Kênh ON
+  Hàng 2:
+    Total MCP: Chỉ Tiêu · TH Ngày · MTD · % MTD · GAP · BQ Ngày
+    OFF / ON: Chỉ Tiêu · TH Ngày · MTD · % MTD  (không GAP / BQ Ngày)
+  """
+  if df is None or getattr(df, 'empty', True):
+    return '<p style="color:#718096;">Không có dữ liệu ASO ALL.</p>'
+  df = df.drop(columns=['Mã NVBH'], errors='ignore').copy()
+
+  # (label hiển thị, tên cột data)
+  total_cols = [
+      ('Chỉ Tiêu', 'Chỉ Tiêu MCP'),
+      ('TH Ngày', 'Thực Hiện Ngày'),
+      ('MTD', 'MTD'),
+      ('% MTD', '% MTD'),
+      ('GAP', 'GAP'),
+      ('BQ Ngày', 'Bình quân ngày'),
+  ]
+  off_cols = [
+      ('Chỉ Tiêu', 'MCP OFF'),
+      ('TH Ngày', 'Thực hiện ngày OFF'),
+      ('MTD', 'MTD OFF'),
+      ('% MTD', '% MTD OFF'),
+  ]
+  on_cols = [
+      ('Chỉ Tiêu', 'MCP ON'),
+      ('TH Ngày', 'Thực hiện ngày ON'),
+      ('MTD', 'MTD ON'),
+      ('% MTD', '% MTD ON'),
+  ]
+  groups = [
+      ('Total MCP', total_cols),
+      ('MCP Kênh OFF', off_cols),
+      ('MCP Kênh ON', on_cols),
+  ]
+  # Chỉ giữ group còn cột trong data
+  groups = [(lab, [(a, b) for a, b in cols if b in df.columns]) for lab, cols in groups]
+  groups = [(lab, cols) for lab, cols in groups if cols]
+
+  max_name = 12
+  if 'Tên NVBH' in df.columns:
+    for n in df['Tên NVBH'].astype(str):
+      max_name = max(max_name, len(n))
+  name_w = max(150, min(260, max_name * 9 + 24))
+  stt_w = 48
+  sh = 'box-shadow:3px 0 5px -2px rgba(0,0,0,.22);'
+  th = (
+      'background-color:#1a365d !important;color:#ffffff !important;'
+      'font-weight:800 !important;text-align:center !important;'
+      'border:1px solid #2b6cb0 !important;padding:6px 8px;white-space:nowrap;'
+  )
+  th_sub = (
+      'background-color:#2c5282 !important;color:#ffffff !important;'
+      'font-weight:700 !important;text-align:center !important;'
+      'border:1px solid #2b6cb0 !important;padding:5px 6px;white-space:nowrap;'
+  )
+  td = (
+      'border:1px solid #bce2f5 !important;padding:5px 6px;'
+      'text-align:center !important;white-space:nowrap;'
+  )
+
+  html = [
+      '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:8px;">',
+      '<table class="custom-kpi-table" style="border-collapse:separate;border-spacing:0;'
+      'width:max-content;min-width:100%;">',
+      '<thead>',
+      '<tr>',
+      f'<th rowspan="2" style="{th}position:sticky;left:0;z-index:8;min-width:{stt_w}px;{sh}">STT</th>',
+      f'<th rowspan="2" style="{th}position:sticky;left:{stt_w}px;z-index:8;min-width:{name_w}px;{sh}">Tên NVBH</th>',
+  ]
+  for lab, cols in groups:
+    html.append(f'<th colspan="{len(cols)}" style="{th}">{lab}</th>')
+  html.append('</tr><tr>')
+  for _lab, cols in groups:
+    for sub_lab, _c in cols:
+      html.append(f'<th style="{th_sub}">{sub_lab}</th>')
+  html.append('</tr></thead><tbody>')
+
+  n_rows = len(df)
+  for pos, (_, row) in enumerate(df.iterrows()):
+    ten_u = str(row.get('Tên NVBH', '')).upper()
+    stt_s = str(row.get('STT', '')).strip()
+    is_tot = (
+        'TOTAL' in ten_u or 'TỔNG' in ten_u
+        or (stt_s in ('-', '') and pos == n_rows - 1)
+    )
+    bg = '#1a365d' if is_tot else ('#e6f4fc' if pos % 2 == 0 else '#ffffff')
+    fg = '#ffffff' if is_tot else '#1a202c'
+    html.append('<tr' + (' class="row-total"' if is_tot else '') + '>')
+
+    stt = row.get('STT', '')
+    if pd.isna(stt):
+      stt = ''
+    html.append(
+        f'<td style="{td}position:sticky;left:0;z-index:{"7" if is_tot else "5"};'
+        f'min-width:{stt_w}px;background-color:{bg} !important;color:{fg} !important;'
+        f'font-weight:{"900" if is_tot else "400"};{sh}">{stt}</td>'
+    )
+    ten = row.get('Tên NVBH', '')
+    if pd.isna(ten):
+      ten = ''
+    html.append(
+        f'<td style="{td}position:sticky;left:{stt_w}px;z-index:{"7" if is_tot else "5"};'
+        f'min-width:{name_w}px;background-color:{bg} !important;color:{fg} !important;'
+        f'text-align:left !important;font-weight:{"900" if is_tot else "600"};{sh}">{ten}</td>'
+    )
+
+    for _lab, cols in groups:
+      for sub_lab, col in cols:
+        val = row.get(col, '')
+        if pd.isna(val):
+          val = ''
+        elif isinstance(val, (float, int)) and not isinstance(val, bool):
+          try:
+            if float(val).is_integer():
+              val = int(val)
+            else:
+              val = round(float(val), 2)
+          except Exception:
+            pass
+        is_pct = str(col).startswith('%') or sub_lab.startswith('%')
+        if is_pct:
+          sval = str(val)
+          if sval and not sval.endswith('%') and str(sval).replace('.', '').replace(',', '').lstrip('-').isdigit():
+            sval = f'{sval}%'
+          style_bg = ''
+          cls = ''
+          try:
+            style_bg = color_pct_bg(sval) or ''
+            cls = color_pct_class(sval) or ''
+          except Exception:
+            pass
+          if style_bg:
+            html.append(
+                f'<td data-colored="1" class="{cls}" style="{td}{style_bg}'
+                f'text-align:center !important;font-weight:800 !important;">{sval}</td>'
+            )
+          else:
+            html.append(
+                f'<td style="{td}background-color:{bg} !important;color:{fg} !important;'
+                f'font-weight:{"900" if is_tot else "400"};">{sval}</td>'
+            )
+        else:
+          try:
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+              sval = f'{int(round(float(val))):,}'.replace(',', '.')
+            else:
+              sval = str(val)
+          except Exception:
+            sval = str(val)
+          html.append(
+              f'<td style="{td}background-color:{bg} !important;color:{fg} !important;'
+              f'font-weight:{"900" if is_tot else "400"};">{sval}</td>'
+          )
+    html.append('</tr>')
+  html.append('</tbody></table></div>')
+  return ''.join(html)
+
+
 def render_html_table(df, freeze_cols=None):
   """Bảng KPI format Trưng Bày: sticky cột đầu + cuộn ngang.
   freeze_cols: list cột cố định (mặc định STT + Tên NVBH;
@@ -23526,8 +23688,10 @@ if _nav == '📊 BÁO CÁO KPI':
           if isinstance(x, (int, float))
           else x
       )
-    st.markdown(render_html_table(_df_show), unsafe_allow_html=True)
-
+    if selected_kpi == 'ASO_ALL':
+      st.markdown(render_aso_all_html(_df_show), unsafe_allow_html=True)
+    else:
+      st.markdown(render_html_table(_df_show), unsafe_allow_html=True)
 # ---- Bảng theo nhóm LẺ / VIP3 / VIP5 / VIPSI ----
     if selected_kpi in ('PC_BT', 'LPPC', 'ASO_FOCUS', 'ASO_FOCUS_2'):
       try:
