@@ -10354,39 +10354,97 @@ def build_summary_table1(df, report_date, mcp_df, filter_nv=None, f_thu_list=Non
         pass
     return {k: (v[0], v[1]) for k, v in out.items()}
 
-  pc_bt = _kpi_maps('PC_BT')
   lppc = _kpi_maps('LPPC')
   pc_on = _kpi_maps('PC_ON')
 
-  # PC BT TH = total PC phát sinh (OFF + ON), unique CH/ngày
+  # ===== PC BT: CT = Call Plan (OFF+ON); TH = số PC từ Báo Cáo PC_BT =====
+  # TH lấy đúng build_report('PC_BT') để khớp tab KPI.
+  # CT ngày = Call Plan; CT full tháng = Target KPI (từ build_report).
+  pc_bt = {}
   try:
-    src_pc = df.copy() if df is not None else pd.DataFrame()
-    if not src_pc.empty and 'date' in src_pc.columns:
-      _dd = pd.to_datetime(src_pc['date'], errors='coerce')
-      if full_month:
-        src_pc = src_pc[_dd.notna() & (_dd.dt.date >= date(rd.year, rd.month, 1)) & (_dd.dt.date <= rd)].copy()
-      else:
-        src_pc = src_pc[_dd.notna() & (_dd.dt.date == rd)].copy()
-    c_nv_p = find_col(src_pc, ['Tên NVBH', 'SM Name', 'SM name']) if not src_pc.empty else None
-    c_ma_p = find_col(src_pc, ['Mã CH', 'Outlet_code', 'Outlet Code', 'Mã KH']) if not src_pc.empty else None
-    c_st_p = find_col(src_pc, ['Tình trạng đơn hàng', 'Trạng thái']) if not src_pc.empty else None
-    if c_st_p and not src_pc.empty:
-      src_pc = src_pc[~src_pc[c_st_p].astype(str).str.contains('hủy|huỷ|cancel', case=False, na=False)]
-    if not src_pc.empty and c_nv_p and c_ma_p:
-      src_pc = src_pc.copy()
-      src_pc['_nv'] = src_pc[c_nv_p].astype(str).str.strip()
-      src_pc['_ma'] = src_pc[c_ma_p].map(_nma)
-      if 'date' in src_pc.columns:
-        src_pc['_d'] = pd.to_datetime(src_pc['date'], errors='coerce').dt.date
-        # 1 PC = 1 CH / 1 ngày
-        pc_cnt = src_pc.drop_duplicates(['_nv', '_ma', '_d']).groupby('_nv').size().to_dict()
-      else:
-        pc_cnt = src_pc.drop_duplicates(['_nv', '_ma']).groupby('_nv').size().to_dict()
-      for nv, th_pc in pc_cnt.items():
-        ct0 = pc_bt.get(nv, (0, 0))[0]
-        pc_bt[nv] = (ct0, float(th_pc))
+    df_pc, _, _ = build_report(df, report_date, targets, 'PC_BT', filter_nv, mcp_df=mcp_df)
+    if df_pc is not None and not df_pc.empty and 'Tên NVBH' in df_pc.columns:
+      body = df_pc[~df_pc['Tên NVBH'].astype(str).str.upper().str.contains(
+          'TOTAL|TỔNG|SS ', na=False, regex=True)]
+      c_ct = next((c for c in ['Chỉ Tiêu KPI', 'Chỉ Tiêu MCP', 'Chỉ Tiêu'] if c in body.columns), None)
+      c_mtd = next((c for c in ['MTD', 'Thực Hiện'] if c in body.columns), None)
+      c_day = next((c for c in ['Thực Hiện Ngày'] if c in body.columns), None)
+      for _, r in body.iterrows():
+        nv = str(r['Tên NVBH']).strip()
+        try:
+          ct_m = float(r[c_ct]) if c_ct and pd.notna(r.get(c_ct)) else 0
+        except Exception:
+          ct_m = 0
+        try:
+          th_m = float(r[c_mtd]) if c_mtd and pd.notna(r.get(c_mtd)) else 0
+        except Exception:
+          th_m = 0
+        try:
+          th_d = float(r[c_day]) if c_day and pd.notna(r.get(c_day)) else None
+        except Exception:
+          th_d = None
+        if full_month:
+          pc_bt[nv] = [ct_m, th_m]
+        else:
+          # TH ngày: ưu tiên cột Thực Hiện Ngày; không có thì đếm PC ngày
+          pc_bt[nv] = [0.0, th_d if th_d is not None else 0.0]
   except Exception:
     pass
+
+  # CT ngày = Call Plan (số CH cần VT ngày BC) — OFF + ON
+  try:
+    df_cp = build_kpi_vip_matrix(
+        df, mcp_df, report_date, kpi_type='PC_BT', filter_nv=filter_nv,
+        targets=targets, full_month=bool(full_month), l1_filter='TOTAL',
+    )
+    if df_cp is not None and not df_cp.empty and 'Tên NVBH' in df_cp.columns:
+      body = df_cp[~df_cp['Tên NVBH'].astype(str).str.upper().str.contains(
+          'TOTAL|TỔNG|SS ', na=False, regex=True)]
+      for _, r in body.iterrows():
+        nv = str(r['Tên NVBH']).strip()
+        sct = 0.0
+        for g in ('LẺ', 'VIP3', 'VIP5', 'VIPSI'):
+          if f'CT {g}' in body.columns:
+            try:
+              sct += float(r.get(f'CT {g}', 0) or 0)
+            except Exception:
+              pass
+        th0 = pc_bt.get(nv, [0, 0])[1]
+        if full_month:
+          # Full: giữ CT Target từ build_report; nếu 0 thì dùng Call Plan cộng dồn
+          ct0 = pc_bt.get(nv, [0, 0])[0]
+          pc_bt[nv] = [ct0 if ct0 else sct, th0]
+        else:
+          pc_bt[nv] = [sct, th0]
+  except Exception:
+    pass
+
+  # TH ngày fallback: đếm PC unique CH ngày BC (cùng rule PC_BT: L1 OFF, >=1 line)
+  if not full_month:
+    try:
+      # Dùng lại TH từ build_report trên data chỉ ngày BC
+      if df is not None and not df.empty and 'date' in df.columns:
+        _dd = pd.to_datetime(df['date'], errors='coerce')
+        src_day = df[_dd.notna() & (_dd.dt.date == rd)].copy()
+      else:
+        src_day = df
+      df_pc_d, _, _ = build_report(src_day, report_date, targets, 'PC_BT', filter_nv, mcp_df=mcp_df)
+      if df_pc_d is not None and not df_pc_d.empty and 'Tên NVBH' in df_pc_d.columns:
+        body = df_pc_d[~df_pc_d['Tên NVBH'].astype(str).str.upper().str.contains(
+            'TOTAL|TỔNG|SS ', na=False, regex=True)]
+        c_th = next((c for c in ['MTD', 'Thực Hiện', 'Thực Hiện Ngày'] if c in body.columns), None)
+        for _, r in body.iterrows():
+          nv = str(r['Tên NVBH']).strip()
+          try:
+            th = float(r[c_th]) if c_th and pd.notna(r.get(c_th)) else 0
+          except Exception:
+            th = 0
+          ct0 = pc_bt.get(nv, [0, 0])[0]
+          pc_bt[nv] = [ct0, th]
+    except Exception:
+      pass
+
+  pc_bt = {k: (float(v[0]), float(v[1])) for k, v in pc_bt.items()}
 
   # LPPC day: TH from day data still via build_report on full month MTD is wrong —
   # use build_report with filtered day for TH only
@@ -10727,13 +10785,21 @@ def build_summary_table2(df, report_date, mcp_df, df_combo_off, df_combo_on, bra
 
     nv_set = set()
   for dmap in (aso_x, aso_v, off_ct, on_ct, off_th, on_th,
-               hv_ct['BRAND_VIP'], hv_ct['BRAND_VIPDAISU'],
-               hv_th['BRAND_VIP'], hv_th['BRAND_VIPDAISU']):
-    nv_set |= set(dmap.keys())
+               hv_ct.get('BRAND_VIP', {}), hv_ct.get('BRAND_VIPDAISU', {}),
+               hv_th.get('BRAND_VIP', {}), hv_th.get('BRAND_VIPDAISU', {})):
+    try:
+      nv_set |= set(dmap.keys())
+    except Exception:
+      pass
+  # Luôn lấy NV từ MCP để bảng 2 không bị trống
   if mcp_df is not None and not getattr(mcp_df, 'empty', True):
     c_nv_m = find_col(mcp_df, ['SM Name', 'SM name', 'Tên NVBH'])
     if c_nv_m:
       nv_set |= set(mcp_df[c_nv_m].dropna().astype(str).str.strip().tolist())
+  if not nv_set and df is not None and not getattr(df, 'empty', True):
+    c_nv_d = find_col(df, ['Tên NVBH', 'SM Name', 'SM name'])
+    if c_nv_d:
+      nv_set |= set(df[c_nv_d].dropna().astype(str).str.strip().tolist())
   if nv_selected(filter_nv):
     vals = set(filter_nv if isinstance(filter_nv, list) else [filter_nv])
     nv_set = {n for n in nv_set if n in vals}
@@ -21722,9 +21788,11 @@ if _nav == '📊 BÁO CÁO KPI':
           df, report_date, mcp, df_combo_off, df_combo_on, df_brand,
           filter_nv=filter_nv, f_thu_list=f_thu_sum, targets=_tg, full_month=bool(_sum_full),
       )
+      if df_sum2 is None or df_sum2.empty:
+        st.caption('⚠️ Bảng 2: không có dữ liệu (kiểm tra Data_Brand / Combo / ASO).')
     except Exception as _e2:
       df_sum2 = pd.DataFrame()
-      st.caption(f'(Lỗi Bảng 2: {_e2})')
+      st.error(f'Lỗi Bảng 2: {_e2}')
 
     # Giữ df_summary tương thích phần chi tiết VIP bên dưới
     try:
