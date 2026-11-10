@@ -5117,39 +5117,54 @@ def build_cov_mcp_off_vip(mcp_df, df_rpt, report_date, filter_nv=None, sales_his
 
 
 def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI / LẺ (Tháng T)', timegone_pct=None):
-  """Format bảng COV VIP/LẺ giống các bảng KPI / Weekly.
-  % COV rule riêng:
-    <50% đỏ | 50–<75% cam | 75–<90% vàng | 90–100% xanh.
+  """Format bảng COV VIP/LẺ — header 2 dòng:
+  Hàng 1: VIP3 | VIP5 | VIPSI | LẺ
+  Hàng 2: MCP | ASO | % COV  (mỗi nhóm)
+  % COV: <50% đỏ | 50–<75% cam | 75–<90% vàng | 90–100% xanh.
   """
   if df is None or df.empty:
     return f'<p style="color:#718096;">Không có dữ liệu — {title}</p>'
-  try:
-    _moc = float(timegone_pct) if timegone_pct is not None else float(_CURRENT_TIMEGONE or 100)
-  except Exception:
-    _moc = 100.0
-  cols = [c for c in df.columns if not str(c).startswith('_')]
+  groups = [g for g in ('VIP3', 'VIP5', 'VIPSI', 'LẺ') if f'MCP {g}' in df.columns or f'ASO {g}' in df.columns]
+  if not groups:
+    groups = ('VIP3', 'VIP5', 'VIPSI', 'LẺ')
+
   th = (
       'background-color:#1a365d !important;color:#ffffff !important;'
       'font-weight:800 !important;text-align:center !important;'
-      'border:1px solid #2b6cb0 !important;padding:6px 8px;font-size:11px;white-space:nowrap;'
+      'border:1px solid #2b6cb0 !important;padding:6px 8px;white-space:nowrap;'
+  )
+  th_sub = (
+      'background-color:#2c5282 !important;color:#ffffff !important;'
+      'font-weight:700 !important;text-align:center !important;'
+      'border:1px solid #2b6cb0 !important;padding:5px 6px;white-space:nowrap;'
   )
   td = (
-      'border:1px solid #bce2f5 !important;padding:5px 6px;font-size:11px;'
+      'border:1px solid #bce2f5 !important;padding:5px 6px;'
       'text-align:center !important;white-space:nowrap;'
   )
+  max_name = 12
+  if 'Tên NVBH' in df.columns:
+    for n in df['Tên NVBH'].astype(str):
+      max_name = max(max_name, len(n))
+  name_w = max(140, min(280, max_name * 9 + 24))
+  stt_w = 44
+
   html = [
-      f'<h4 style="color:#034ea2;font-weight:800;margin:16px 0 6px 0;">{title}</h4>',
+      f'<h4 style="color:#034ea2;font-weight:800;margin:16px 0 6px 0;text-align:center;">{title}</h4>',
       '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:12px;">',
-      '<table class="custom-kpi-table" style="border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;">',
-      '<thead><tr>',
+      '<table class="custom-kpi-table" style="border-collapse:separate;border-spacing:0;'
+      'width:max-content;min-width:100%;">',
+      '<thead>',
+      '<tr>',
+      f'<th rowspan="2" style="{th}position:sticky;left:0;z-index:8;min-width:{stt_w}px;">{'STT'}</th>',
+      f'<th rowspan="2" style="{th}position:sticky;left:{stt_w}px;z-index:8;min-width:{name_w}px;">{'Tên NVBH'}</th>',
   ]
-  for c in cols:
-    sticky = ''
-    if c == 'STT':
-      sticky = 'position:sticky;left:0;z-index:3;'
-    elif c == 'Tên NVBH':
-      sticky = 'position:sticky;left:42px;z-index:3;'
-    html.append(f'<th style="{th}{sticky}">{c}</th>')
+  for g in groups:
+    html.append(f'<th colspan="3" style="{th}">{g}</th>')
+  html.append('</tr><tr>')
+  for _g in groups:
+    for sub in ('MCP', 'ASO', '% COV'):
+      html.append(f'<th style="{th_sub}">{sub}</th>')
   html.append('</tr></thead><tbody>')
 
   for pos, (_, row) in enumerate(df.iterrows()):
@@ -5157,61 +5172,68 @@ def render_cov_vip_html(df, title='COV MCP OFF — VIP3 / VIP5 / VIPSI / LẺ (T
     bg = '#1a365d' if is_tot else ('#e6f4fc' if pos % 2 == 0 else '#ffffff')
     fg = '#ffffff' if is_tot else '#1a202c'
     html.append('<tr' + (' class="row-total"' if is_tot else '') + '>')
-    for c in cols:
-      val = row.get(c, '')
-      if pd.isna(val):
-        val = ''
-      sticky = ''
-      if c == 'STT':
-        sticky = f'position:sticky;left:0;z-index:1;background-color:{bg} !important;'
-      elif c == 'Tên NVBH':
-        sticky = f'position:sticky;left:42px;z-index:1;background-color:{bg} !important;text-align:left !important;font-weight:600;'
-      is_pct = str(c).startswith('%')
-      style_extra = ''
-      cls = 'row-total-cell' if is_tot else ''
-      if is_pct:
-        try:
+    # STT
+    stt = row.get('STT', '')
+    if pd.isna(stt):
+      stt = ''
+    html.append(
+        f'<td style="{td}position:sticky;left:0;z-index:{"6" if is_tot else "4"};'
+        f'background-color:{bg} !important;color:{fg} !important;'
+        f'font-weight:{"900" if is_tot else "400"};min-width:{stt_w}px;">{stt}</td>'
+    )
+    # Tên
+    ten = row.get('Tên NVBH', '')
+    if pd.isna(ten):
+      ten = ''
+    html.append(
+        f'<td style="{td}position:sticky;left:{stt_w}px;z-index:{"6" if is_tot else "4"};'
+        f'background-color:{bg} !important;color:{fg} !important;'
+        f'text-align:left !important;font-weight:{"900" if is_tot else "600"};'
+        f'min-width:{name_w}px;">{ten}</td>'
+    )
+    for g in groups:
+      for sub in ('MCP', 'ASO', '% COV'):
+        col = f'{sub} {g}'
+        val = row.get(col, '')
+        if pd.isna(val):
+          val = ''
+        if sub == '% COV':
           try:
             v_pct = float(str(val).replace('%', '').replace(',', '.').strip() or 0)
           except Exception:
             v_pct = 0.0
-          # Rule COV VIP/LẺ: <50 đỏ | 50-<75 cam | 75-<90 vàng | >=90 xanh
           if v_pct < 50:
-            cls = 'pct-red'
-            style_extra = (
-                'background-color:#fed7d7 !important;color:#742a2a !important;'
-                'font-weight:800 !important;'
+            cls, style_extra = 'pct-red', (
+                'background-color:#fed7d7 !important;color:#742a2a !important;font-weight:800 !important;'
             )
           elif v_pct < 75:
-            cls = 'pct-orange'
-            style_extra = (
-                'background-color:#feebc8 !important;color:#c05621 !important;'
-                'font-weight:800 !important;'
+            cls, style_extra = 'pct-orange', (
+                'background-color:#feebc8 !important;color:#c05621 !important;font-weight:800 !important;'
             )
           elif v_pct < 90:
-            cls = 'pct-yellow'
-            style_extra = (
-                'background-color:#fefcbf !important;color:#744210 !important;'
-                'font-weight:800 !important;'
+            cls, style_extra = 'pct-yellow', (
+                'background-color:#fefcbf !important;color:#744210 !important;font-weight:800 !important;'
             )
           else:
-            cls = 'pct-green'
-            style_extra = (
-                'background-color:#c6f6d5 !important;color:#22543d !important;'
-                'font-weight:800 !important;'
+            cls, style_extra = 'pct-green', (
+                'background-color:#c6f6d5 !important;color:#22543d !important;font-weight:800 !important;'
             )
-          # Không gắn nền zebra/total vào ô % — để class màu hiển thị đúng
           html.append(
-              f'<td data-colored="1" class="{cls}" style="{td}{sticky}{style_extra}'
+              f'<td data-colored="1" class="{cls}" style="{td}{style_extra}'
               f'text-align:center !important;">{val}</td>'
           )
-          continue
-        except Exception:
-          pass
-      html.append(
-          f'<td class="{cls}" style="{td}background-color:{bg} !important;color:{fg} !important;'
-          f'font-weight:{"900" if is_tot else "600"};{sticky}{style_extra}">{val}</td>'
-      )
+        else:
+          try:
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+              sval = f'{int(round(val)):,}'.replace(',', '.')
+            else:
+              sval = str(val)
+          except Exception:
+            sval = str(val)
+          html.append(
+              f'<td style="{td}background-color:{bg} !important;color:{fg} !important;'
+              f'font-weight:{"900" if is_tot else "400"};">{sval}</td>'
+          )
     html.append('</tr>')
   html.append('</tbody></table></div>')
   return ''.join(html)
@@ -7543,7 +7565,7 @@ def render_vip_group_kpi_html(df, title='', money_groups=None, is_float=False):
   html.append(f'<th colspan="4" style="{th}">Total</th>')
   html.append('</tr><tr>')
   for _g in list(groups) + ['Total']:
-    for sub in ('CT', 'TH', 'MTD', '% MTD'):
+    for sub in ('Call Plan', 'TH', 'MTD', '% MTD'):
       html.append(f'<th style="{th_sub}">{sub}</th>')
   html.append('</tr></thead><tbody>')
 
@@ -11312,7 +11334,7 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
   - CT = 60 / NV
   - % MTD = (MCP ON + Tạo Mới MTD) / CT
   """
-  cols = ['STT', 'Tên NVBH', 'Total MCP ON', 'CT', 'MCP ON', 'Tạo Mới Ngày', 'Total Tạo Mới', 'MCP + Tạo Mới', '% MTD']
+  cols = ['STT', 'Tên NVBH', 'Total MCP', 'MCP ON Bev', 'Chỉ Tiêu', 'Tạo Mới Ngày', 'Total Tạo Mới', 'Total MCP Bev', '% MTD']
   empty = pd.DataFrame(columns=cols)
   if report_date is None:
     return empty
@@ -11485,12 +11507,12 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
     pct = round(mcp_plus / CT * 100, 1) if CT else 0.0
     rows.append({
         'Tên NVBH': nv,
-        'Total MCP ON': total_on,
-        'CT': CT,
-        'MCP ON': mcp_n,
+        'Total MCP': total_on,
+        'Chỉ Tiêu': CT,
+        'MCP ON Bev': mcp_n,
         'Tạo Mới Ngày': th_day,
         'Total Tạo Mới': mtd,
-        'MCP + Tạo Mới': mcp_plus,
+        'Total MCP Bev': mcp_plus,
         '% MTD': f'{pct}%',
         '_pct': pct,
         '_mtd': mtd,
@@ -11501,24 +11523,29 @@ def build_new_outlet_on_report(mcp_df, report_date, filter_nv=None):
 
   out = pd.DataFrame(rows).sort_values('_pct', ascending=True).reset_index(drop=True)
   out.insert(0, 'STT', range(1, len(out) + 1))
+  cols_order = ['STT', 'Tên NVBH', 'Total MCP', 'MCP ON Bev', 'Chỉ Tiêu',
+                'Tạo Mới Ngày', 'Total Tạo Mới', 'Total MCP Bev', '% MTD']
+  # giữ cột phụ nếu có
+  extra = [c for c in out.columns if c not in cols_order]
+  out = out[[c for c in cols_order if c in out.columns] + extra]
 
-  tot_all_on = int(out['Total MCP ON'].sum())
-  tot_mcp = int(out['MCP ON'].sum())
-  tot_ct = int(out['CT'].sum())
+  tot_all_on = int(out['Total MCP'].sum())
+  tot_mcp = int(out['MCP ON Bev'].sum())
+  tot_ct = int(out['Chỉ Tiêu'].sum())
   tot_th = int(out['Tạo Mới Ngày'].sum())
   tot_mtd = int(out['Total Tạo Mới'].sum())
-  tot_plus = int(out['MCP + Tạo Mới'].sum())
+  tot_plus = int(out['Total MCP Bev'].sum())
   n_nv = len(out)
   tot_pct = round(tot_plus / (CT * n_nv) * 100, 1) if n_nv and CT else 0.0
   tot = {
       'STT': '',
       'Tên NVBH': f'SS {_ss_name()} Total',
-      'Total MCP ON': tot_all_on,
-      'CT': tot_ct,
-      'MCP ON': tot_mcp,
+      'Total MCP': tot_all_on,
+      'Chỉ Tiêu': tot_ct,
+      'MCP ON Bev': tot_mcp,
       'Tạo Mới Ngày': tot_th,
       'Total Tạo Mới': tot_mtd,
-      'MCP + Tạo Mới': tot_plus,
+      'Total MCP Bev': tot_plus,
       '% MTD': f'{tot_pct}%',
   }
   out = out.drop(columns=[c for c in out.columns if str(c).startswith('_')], errors='ignore')
@@ -11544,9 +11571,9 @@ def build_new_outlet_on_comments(df):
   for _, r in body.iterrows():
     ten = str(r.get('Tên NVBH', '')).strip()
     ct = _num(r, 'CT') or 60
-    score = _num(r, 'MCP + Tạo Mới')
+    score = _num(r, 'Total MCP Bev')
     if score <= 0:
-      score = _num(r, 'MCP ON') + _num(r, 'Total Tạo Mới')
+      score = _num(r, 'MCP ON Bev') + _num(r, 'Total Tạo Mới')
     gap = max(0, int(ct - score))
     pct = score / ct * 100 if ct else 0
     item = (ten, gap, pct, int(score))
@@ -11633,7 +11660,7 @@ def render_new_outlet_on_html(df, title='TẠO MỚI KÊNH ON - CHUYÊN BEV'):
           except Exception:
             v_pct = 0.0
           color_this = True
-        elif str(c).strip() == 'MCP + Tạo Mới':
+        elif str(c).strip() == 'Total MCP Bev':
           try:
             v_num = float(str(val).replace(',', '').strip() or 0)
           except Exception:
@@ -20347,7 +20374,7 @@ if _nav == '📊 BÁO CÁO KPI':
         f"⚡ Ngày BC: {report_date.strftime('%d/%m/%Y')} | "
         f"Lọc NV: {nv_label(filter_nv)} | "
         f"MCP ON từ Data_MCP · Tạo mới từ DanhSachXetDuyetCuaHang · "
-        f"CT = 60/NV · %MTD = (MCP + Tạo Mới)/CT"
+        f"Chỉ Tiêu = 60/NV · %MTD = (Total MCP Bev)/Chỉ Tiêu"
     )
     if df_new_on is None or df_new_on.empty:
       st.warning(
@@ -20358,11 +20385,11 @@ if _nav == '📊 BÁO CÁO KPI':
       # Metric cards từ dòng Tổng Cộng
       _tot = df_new_on.iloc[-1]
       try:
-        _m_mcp = int(float(_tot.get('MCP ON', 0) or 0))
+        _m_mcp = int(float(_tot.get('MCP ON Bev', 0) or 0))
       except Exception:
         _m_mcp = 0
       try:
-        _m_ct = int(float(_tot.get('CT', 0) or 0))
+        _m_ct = int(float(_tot.get('Chỉ Tiêu', 0) or 0))
       except Exception:
         _m_ct = 0
       try:
@@ -20415,7 +20442,7 @@ if _nav == '📊 BÁO CÁO KPI':
       st.caption(
           'MCP ON = CH Kênh ON trên Data_MCP (L1 ON + L3 đủ ĐK). '
           'Tạo Mới Ngày / MTD = từ DanhSachXetDuyetCuaHang (Thêm mới + Đã duyệt + L1 ON + L3 đủ ĐK). '
-          'CT = 60/NV · MCP + Tạo Mới = MCP ON + Total Tạo Mới · % MTD = (MCP + Tạo Mới) / CT.'
+          'Chỉ Tiêu = 60/NV · Total MCP Bev = MCP ON Bev + Total Tạo Mới · % MTD = Total MCP Bev / Chỉ Tiêu.'
       )
 
   elif selected_kpi == 'SUMMARY':
@@ -23473,7 +23500,7 @@ if _nav == '📊 BÁO CÁO KPI':
       if not _aso_off_only:
         with c6:
           render_metric_card(
-              'MCP ON', f"{int(total_row.get('MTD ON', 0)):,}/{int(total_row.get('MCP ON', 0)):,}"
+              'MCP ON', f"{int(total_row.get('MTD ON', 0)):,}/{int(total_row.get('MCP ON Bev', 0)):,}"
           )
     else:
       c1, c2, c3, c4 = st.columns(4)
