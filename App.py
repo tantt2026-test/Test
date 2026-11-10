@@ -21117,7 +21117,7 @@ def fill_mbs_t11_bonus(df):
       continue
     actual = float(pd.to_numeric(sub[c_act], errors='coerce').fillna(0).sum())
     target = float(pd.to_numeric(sub[c_tgt], errors='coerce').fillna(0).iloc[0])
-    _, _, muc, _, diem = mbs_t11_eval(sub, member, actual, target, col_brand=c_brand,
+    _, _, muc, _, diem, _, _ = mbs_t11_eval(sub, member, actual, target, col_brand=c_brand,
                                       col_actual=c_act, col_loai=c_loai or '_loai')
     df.loc[idx, c_bonus] = float(diem)
     # Data_Brand mẫu mới: cột Mức đạt + Doanh số được tính thưởng (= DS thực đạt của CH khi đạt mức)
@@ -25586,7 +25586,7 @@ def build_mbs_data_summary(df_source, kind='CAT'):
     member = first[col_member] if col_member else ''
     if kind_u == 'BRAND' and col_brand and is_mbs_t11_member(member):
       bonus = float(mbs_t11_eval(sub, member, actual, target, col_brand=col_brand,
-                                 col_actual='_summary_actual', col_loai='_summary_type')[4])
+                                 col_actual='_summary_actual', col_loai='_summary_type')[4])  # diem
     elif col_bonus and not pd.to_numeric(sub[col_bonus], errors='coerce').dropna().empty:
       bonus = float(pd.to_numeric(sub[col_bonus], errors='coerce').dropna().iloc[0])
     else:
