@@ -10958,9 +10958,19 @@ def render_summary_split_html(df, title='', money_cols=None, header_groups=None)
       '<thead>',
       '<tr>',
   ]
+  # Sticky widths
+  stt_w, name_w = 44, 160
+  th_stt = th + f'position:sticky;left:0;z-index:8;min-width:{stt_w}px;max-width:{stt_w}px;'
+  th_ten = th + f'position:sticky;left:{stt_w}px;z-index:8;min-width:{name_w}px;'
+
   # Row 1: group headers
   for c in fixed_cols:
-    html.append(f'<th rowspan="2" style="{th}">{c}</th>')
+    if c == 'STT':
+      html.append(f'<th rowspan="2" style="{th_stt}">STT</th>')
+    elif c in ('Tên NVBH', 'Tên NV'):
+      html.append(f'<th rowspan="2" style="{th_ten}">Tên NVBH</th>')
+    else:
+      html.append(f'<th rowspan="2" style="{th}">{c}</th>')
   for gname, subcols in header_groups:
     html.append(f'<th colspan="{len(subcols)}" style="{th}">{gname}</th>')
   html.append('</tr><tr>')
@@ -11025,8 +11035,14 @@ def render_summary_split_html(df, title='', money_cols=None, header_groups=None)
             cell = str(v)
         except Exception:
           cell = str(v)
+      sticky = ''
+      if c == 'STT':
+        sticky = f'position:sticky;left:0;z-index:{"6" if is_tot else "4"};min-width:44px;max-width:44px;background-color:{"#1a365d" if is_tot else "#fff"} !important;'
+      elif c in ('Tên NVBH', 'Tên NV'):
+        sticky = f'position:sticky;left:44px;z-index:{"6" if is_tot else "4"};min-width:160px;text-align:left !important;font-weight:600;background-color:{"#1a365d" if is_tot else "#fff"} !important;'
+      # data-colored / total giữ style riêng; sticky bổ sung left
       html.append(
-          f'<td {cls_attr} style="text-align:center;border:1px solid #bce2f5;{style}">{cell}</td>'
+          f'<td {cls_attr} style="text-align:center;border:1px solid #bce2f5;{style}{sticky}">{cell}</td>'
       )
     html.append('</tr>')
   html.append('</tbody></table></div>')
@@ -21860,73 +21876,144 @@ if _nav == '📊 BÁO CÁO KPI':
       st.info('Không có cửa hàng VIP MCH nào chưa mua hàng theo bộ lọc hiện tại.')
     else:
       cols_vip = ['STT', 'Tên NVBH', 'Mã KH', 'Tên KH', 'VIP', 'Member Type', 'Thứ VT', 'Chỉ Tiêu', 'Trạng Thái']
-      # Format giống bảng KPI (custom-kpi-table) + dòng Tổng Cộng
-      _html = [
-          '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">',
-          '<table class="custom-kpi-table">',
-          '<thead><tr>',
-      ]
-      for _c in cols_vip:
-        _html.append(f'<th>{_c}</th>')
-      _html.append('</tr></thead><tbody>')
-      _sum_ct = 0.0
-      for _i, (_, _row) in enumerate(df_vip_chua[cols_vip].iterrows()):
-        _bg = '#e6f7ff' if _i % 2 == 0 else '#ffffff'
-        _html.append(f'<tr style="background-color:{_bg} !important;">')
+      # ---- Slicer: Tên NVBH · Mã KH · Tên KH · VIP · Member Type · Thứ ----
+      _v0 = df_vip_chua.copy()
+      def _opts(col):
+        if col not in _v0.columns:
+          return []
+        return sorted([str(x).strip() for x in _v0[col].dropna().unique()
+                       if str(x).strip() and str(x).lower() not in ('nan', 'none')])
+      c1, c2, c3 = st.columns(3)
+      with c1:
+        st.markdown('<p class="filter-label">Tên NVBH</p>', unsafe_allow_html=True)
+        f_vip_nv = st.multiselect('', _opts('Tên NVBH'), key='vip_chua_nv', label_visibility='collapsed')
+      with c2:
+        st.markdown('<p class="filter-label">Mã KH</p>', unsafe_allow_html=True)
+        f_vip_ma = st.multiselect('', _opts('Mã KH'), key='vip_chua_ma', label_visibility='collapsed')
+      with c3:
+        st.markdown('<p class="filter-label">Tên KH</p>', unsafe_allow_html=True)
+        f_vip_ten = st.multiselect('', _opts('Tên KH'), key='vip_chua_ten', label_visibility='collapsed')
+      c4, c5, c6 = st.columns(3)
+      with c4:
+        st.markdown('<p class="filter-label">VIP</p>', unsafe_allow_html=True)
+        f_vip_g = st.multiselect('', _opts('VIP'), key='vip_chua_g', label_visibility='collapsed')
+      with c5:
+        st.markdown('<p class="filter-label">Member Type</p>', unsafe_allow_html=True)
+        f_vip_mt = st.multiselect('', _opts('Member Type'), key='vip_chua_mt', label_visibility='collapsed')
+      with c6:
+        st.markdown('<p class="filter-label">Thứ VT</p>', unsafe_allow_html=True)
+        f_vip_thu = st.multiselect('', _opts('Thứ VT'), key='vip_chua_thu', label_visibility='collapsed')
+
+      df_vshow = _v0
+      if f_vip_nv:
+        df_vshow = df_vshow[df_vshow['Tên NVBH'].astype(str).str.strip().isin(f_vip_nv)]
+      if f_vip_ma:
+        df_vshow = df_vshow[df_vshow['Mã KH'].astype(str).str.strip().isin(f_vip_ma)]
+      if f_vip_ten:
+        df_vshow = df_vshow[df_vshow['Tên KH'].astype(str).str.strip().isin(f_vip_ten)]
+      if f_vip_g:
+        df_vshow = df_vshow[df_vshow['VIP'].astype(str).str.strip().isin(f_vip_g)]
+      if f_vip_mt:
+        df_vshow = df_vshow[df_vshow['Member Type'].astype(str).str.strip().isin(f_vip_mt)]
+      if f_vip_thu:
+        df_vshow = df_vshow[df_vshow['Thứ VT'].astype(str).str.strip().isin(f_vip_thu)]
+      df_vshow = df_vshow.reset_index(drop=True)
+      if 'STT' in df_vshow.columns:
+        df_vshow['STT'] = range(1, len(df_vshow) + 1)
+
+      if df_vshow.empty:
+        st.info('Không có dữ liệu sau khi lọc Slicer.')
+      else:
+        # Format giống bảng KPI (custom-kpi-table) + dòng Tổng Cộng + sticky STT/Tên
+        _html = [
+            '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">',
+            '<table class="custom-kpi-table" style="border-collapse:separate;border-spacing:0;">',
+            '<thead><tr>',
+        ]
         for _c in cols_vip:
-          _v = _row.get(_c, '')
-          if pd.isna(_v):
-            _v = ''
-          if _c == 'Chỉ Tiêu':
-            try:
-              _num = float(_v) if _v != '' else 0.0
-            except Exception:
-              _num = 0.0
-            _sum_ct += _num
-            _s = format_number_vn(_num)
+          if _c == 'STT':
+            _html.append(
+                '<th style="position:sticky;left:0;z-index:8;min-width:44px;'
+                'background-color:#1a365d !important;color:#fff !important;">STT</th>'
+            )
+          elif _c == 'Tên NVBH':
+            _html.append(
+                '<th style="position:sticky;left:44px;z-index:8;min-width:160px;'
+                'background-color:#1a365d !important;color:#fff !important;">Tên NVBH</th>'
+            )
           else:
-            _s = str(_v)
-          if _c == 'Trạng Thái':
-            _html.append(
-                f'<td style="text-align:center;color:#c53030;font-weight:700;'
-                f'background-color:{_bg} !important;">{_s}</td>'
-            )
-          elif _c in ('Tên NVBH', 'Tên KH'):
-            _html.append(
-                f'<td style="text-align:left;background-color:{_bg} !important;">{_s}</td>'
-            )
+            _html.append(f'<th>{_c}</th>')
+        _html.append('</tr></thead><tbody>')
+        _sum_ct = 0.0
+        for _i, (_, _row) in enumerate(df_vshow[cols_vip].iterrows()):
+          _bg = '#e6f7ff' if _i % 2 == 0 else '#ffffff'
+          _html.append(f'<tr style="background-color:{_bg} !important;">')
+          for _c in cols_vip:
+            _v = _row.get(_c, '')
+            if pd.isna(_v):
+              _v = ''
+            if _c == 'Chỉ Tiêu':
+              try:
+                _num = float(_v) if _v != '' else 0.0
+              except Exception:
+                _num = 0.0
+              _sum_ct += _num
+              _s = format_number_vn(_num)
+            else:
+              _s = str(_v)
+            if _c == 'STT':
+              _html.append(
+                  f'<td style="text-align:center;background-color:{_bg} !important;'
+                  f'position:sticky;left:0;z-index:4;min-width:44px;">{_s}</td>'
+              )
+            elif _c == 'Tên NVBH':
+              _html.append(
+                  f'<td style="text-align:left;background-color:{_bg} !important;'
+                  f'position:sticky;left:44px;z-index:4;min-width:160px;font-weight:600;">{_s}</td>'
+              )
+            elif _c == 'Trạng Thái':
+              _html.append(
+                  f'<td style="text-align:center;color:#c53030;font-weight:700;'
+                  f'background-color:{_bg} !important;">{_s}</td>'
+              )
+            elif _c == 'Tên KH':
+              _html.append(
+                  f'<td style="text-align:left;background-color:{_bg} !important;">{_s}</td>'
+              )
+            elif _c == 'Chỉ Tiêu':
+              _html.append(
+                  f'<td style="text-align:right;background-color:{_bg} !important;">{_s}</td>'
+              )
+            else:
+              _html.append(
+                  f'<td style="text-align:center;background-color:{_bg} !important;">{_s}</td>'
+              )
+          _html.append('</tr>')
+        # Dòng Tổng Cộng — format giống total KPI (nền xanh đậm, chữ trắng)
+        _tot_bg = '#1a365d'
+        _html.append(f'<tr style="background-color:{_tot_bg} !important;">')
+        for _c in cols_vip:
+          if _c == 'STT':
+            _s = ''
+          elif _c == 'Tên NVBH':
+            _s = 'TỔNG CỘNG'
           elif _c == 'Chỉ Tiêu':
-            _html.append(
-                f'<td style="text-align:right;background-color:{_bg} !important;">{_s}</td>'
-            )
+            _s = format_number_vn(_sum_ct)
+          elif _c == 'Trạng Thái':
+            _s = f'{len(df_vshow)} CH'
           else:
-            _html.append(
-                f'<td style="text-align:center;background-color:{_bg} !important;">{_s}</td>'
-            )
+            _s = ''
+          _st = 'position:sticky;left:0;z-index:5;' if _c == 'STT' else (
+              'position:sticky;left:44px;z-index:5;' if _c == 'Tên NVBH' else '')
+          _html.append(
+              f'<td style="text-align:{"right" if _c == "Chỉ Tiêu" else "center"};'
+              f'background-color:{_tot_bg} !important;color:#ffffff !important;'
+              f'font-weight:800 !important;{_st}">{_s}</td>'
+          )
         _html.append('</tr>')
-      # Dòng Tổng Cộng — format giống total KPI (nền xanh đậm, chữ trắng)
-      _tot_bg = '#1a365d'
-      _html.append(f'<tr style="background-color:{_tot_bg} !important;">')
-      for _c in cols_vip:
-        if _c == 'STT':
-          _s = ''
-        elif _c == 'Tên NVBH':
-          _s = 'TỔNG CỘNG'
-        elif _c == 'Chỉ Tiêu':
-          _s = format_number_vn(_sum_ct)
-        elif _c == 'Trạng Thái':
-          _s = f'{len(df_vip_chua)} CH'
-        else:
-          _s = ''
-        _html.append(
-            f'<td style="text-align:{"right" if _c == "Chỉ Tiêu" else "center"};'
-            f'background-color:{_tot_bg} !important;color:#ffffff !important;'
-            f'font-weight:800 !important;">{_s}</td>'
-        )
-      _html.append('</tr>')
-      _html.append('</tbody></table></div>')
-      st.markdown(''.join(_html), unsafe_allow_html=True)
-      st.caption(f'Hiển thị: {len(df_vip_chua):,} cửa hàng VIP chưa mua hàng')
+        _html.append('</tbody></table></div>')
+        st.markdown(''.join(_html), unsafe_allow_html=True)
+        st.caption(f'Hiển thị: {len(df_vshow):,} / {len(df_vip_chua):,} cửa hàng VIP chưa mua hàng')
       st.download_button(
           '📥 Tải CSV VIP MCH chưa mua hàng',
           data=df_vip_chua.to_csv(index=False).encode('utf-8-sig'),
