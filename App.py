@@ -7837,20 +7837,24 @@ def render_aso_focus_vip_html(df, title=''):
   return ''.join(html)
 
 
-def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=False):
-  """Bảng DS theo nhóm KH LẺ / VIP3 / VIP5 / VIPSI (Kênh OFF).
+def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=False, turnover_targets=None):
+  """Bảng DS theo nhóm KH LẺ / VIP3 / VIP5 / VIPSI.
 
-  CT = tổng Chỉ tiêu outlet (Target × 1000) CH thuộc nhóm trên MCP OFF.
-  full_month=False: MTD = DS ngày BC | full_month=True: MTD = DS 01→ngày BC.
-  TH luôn = DS ngày BC.
+  - Map nhóm từ MCP (OFF+ON); CH bán hàng không map VIP → LẺ.
+  - TH = DS ngày BC; MTD = DS ngày BC (tắt Full Tháng) hoặc 01→BC (bật Full Tháng).
+  - Cùng nguồn DS với bảng Turnover chính (Thành tiền trước CK; bỏ đơn hủy nếu có cột).
+  - CT nhóm = tổng chỉ tiêu outlet (×1000) CH thuộc nhóm (Full Tháng: mọi CH; ngày: CH có lịch VT ngày BC).
+  - CT Total ưu tiên Chỉ tiêu Turnover chính theo NV; fallback = tổng CT nhóm.
   """
-  groups, ma_to_g, nv_list, nv_ma, _, ma_to_freq = _vip_base_maps(mcp_df, filter_nv)
+  groups, ma_to_g, nv_list, nv_ma, ma_to_nv, ma_to_freq = _vip_base_maps(
+      mcp_df, filter_nv, channel='ALL'
+  )
   cols = ['STT', 'Tên NVBH']
   for g in groups:
     cols += [f'CT {g}', f'TH {g}', f'MTD {g}', f'% {g}']
   cols += ['CT Total', 'TH Total', 'MTD Total', '% Total']
   empty = pd.DataFrame(columns=cols)
-  if not nv_list or df is None or getattr(df, 'empty', True):
+  if df is None or getattr(df, 'empty', True):
     return empty
 
   def _norm_ma(x):
@@ -7858,27 +7862,15 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
     return s[:-2] if s.endswith('.0') else s
 
   tg_map = _load_outlet_target_map_x1000()
-  ct_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
-  # Full Tháng: CT = tổng chỉ tiêu tất cả CH nhóm
-  # Mặc định: CT = chỉ tiêu CH có lịch VT khớp ngày BC
-  _rd_wd = report_date.weekday()  # Mon=0
-  for nv in nv_list:
-    for ma in nv_ma.get(nv, set()):
-      g = ma_to_g.get(ma)
-      if not g:
-        continue
-      if full_month:
-        ct_nv_g[g][nv] += float(tg_map.get(ma, 0) or 0)
-      else:
-        freq = ma_to_freq.get(ma, '')
-        if _rd_wd in _freq_to_weekdays(freq):
-          ct_nv_g[g][nv] += float(tg_map.get(ma, 0) or 0)
+  _rd_wd = report_date.weekday()
+  y, mth = report_date.year, report_date.month
 
   d = df.copy()
   if 'date' not in d.columns:
     return empty
-  d = d[d['date'] >= date(report_date.year, report_date.month, 1)].copy()
+  d = d[d['date'] >= date(y, mth, 1)].copy()
   d = d[d['date'] <= report_date].copy()
+
   c_nv_s = find_col(d, ['Tên NVBH', 'SM Name', 'SM name', 'Nhân viên'])
   c_ma_s = find_col(d, ['Mã CH', 'Outlet Code', 'Outlet_code', 'Mã KH', 'OUTLET_CD'])
   c_ds = find_col(d, [
@@ -7887,28 +7879,80 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
   ])
   if not c_nv_s or not c_ma_s or not c_ds:
     return empty
-  c_st = find_col(d, ['Trạng thái', 'Status', 'Order Status'])
+  c_st = find_col(d, ['Trạng thái', 'Status', 'Order Status', 'Tình trạng đơn hàng'])
   if c_st:
-    d = d[~d[c_st].astype(str).str.contains('hủy|huy|cancel', case=False, na=False)]
+    d = d[~d[c_st].astype(str).str.contains('hủy|huỷ|huy|cancel', case=False, na=False)]
+
   d['_nv'] = d[c_nv_s].astype(str).str.strip()
   d['_ma'] = d[c_ma_s].map(_norm_ma)
   d['_ds'] = pd.to_numeric(d[c_ds], errors='coerce').fillna(0.0)
   d['_g'] = d['_ma'].map(ma_to_g)
-  d = d[d['_g'].notna()].copy()
+  # CH không map VIP/MCP → LẺ (để Total khớp bảng NV)
+  d['_g'] = d['_g'].fillna('LẺ')
   if nv_selected(filter_nv):
     d = filter_df_by_nv(d, '_nv', filter_nv)
 
-  mtd_nv_g = {g: {} for g in groups}
-  th_nv_g = {g: {} for g in groups}
+  # NV list = MCP ∪ NV có bán trong tháng
+  nv_from_sales = sorted({n for n in d['_nv'].unique() if n and str(n).lower() not in ('nan', 'none', '')})
+  nv_set = set(nv_list) | set(nv_from_sales)
+  if nv_selected(filter_nv):
+    vals = {str(v).strip() for v in (filter_nv if isinstance(filter_nv, list) else [filter_nv])}
+    nv_set = {n for n in nv_set if n in vals}
+  nv_list = sorted(nv_set)
+  if not nv_list:
+    return empty
+
+  # CT theo nhóm
+  ct_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
+  for nv in nv_list:
+    for ma in nv_ma.get(nv, set()):
+      g = ma_to_g.get(ma, 'LẺ')
+      if g not in ct_nv_g:
+        continue
+      if full_month:
+        ct_nv_g[g][nv] += float(tg_map.get(ma, 0) or 0)
+      else:
+        freq = ma_to_freq.get(ma, '')
+        if _rd_wd in _freq_to_weekdays(freq):
+          ct_nv_g[g][nv] += float(tg_map.get(ma, 0) or 0)
+
+  # TH / MTD
+  mtd_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
+  th_nv_g = {g: {nv: 0.0 for nv in nv_list} for g in groups}
   if not d.empty:
     d_day = d[d['date'] == report_date]
     d_mtd = d if full_month else d_day
     if not d_mtd.empty:
       for (nv, g), v in d_mtd.groupby(['_nv', '_g'])['_ds'].sum().items():
-        mtd_nv_g[g][nv] = float(v)
+        if nv in mtd_nv_g.get(g, {}):
+          mtd_nv_g[g][nv] = float(v)
+        elif g in mtd_nv_g:
+          mtd_nv_g[g][nv] = float(v)
     if not d_day.empty:
       for (nv, g), v in d_day.groupby(['_nv', '_g'])['_ds'].sum().items():
-        th_nv_g[g][nv] = float(v)
+        if g in th_nv_g:
+          th_nv_g[g][nv] = float(v)
+
+  # Map chỉ tiêu Turnover chính (Mã NVBH → tên)
+  tgt_by_name = {}
+  try:
+    if turnover_targets:
+      # turnover_targets: code → value; lấy tên từ df
+      c_code = find_col(df, ['Mã NVBH', 'SM Code', 'Mã NV'])
+      c_name = find_col(df, ['Tên NVBH', 'SM Name', 'SM name'])
+      if c_code and c_name:
+        tmp = df[[c_code, c_name]].drop_duplicates()
+        for _, r in tmp.iterrows():
+          code = str(r[c_code]).strip()
+          name = str(r[c_name]).strip()
+          if code in turnover_targets:
+            tgt_by_name[name] = float(turnover_targets.get(code, 0) or 0)
+      # fallback: key đã là tên
+      for k, v in turnover_targets.items():
+        if str(k) not in tgt_by_name and not str(k).isdigit():
+          tgt_by_name[str(k).strip()] = float(v or 0)
+  except Exception:
+    tgt_by_name = {}
 
   rows = []
   for nv in nv_list:
@@ -7926,12 +7970,15 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
       _sum_ct += ct
       _sum_th += th
       _sum_mtd += mtd
-    # Cột Total = tổng các nhóm
-    row['CT Total'] = _sum_ct
+    # CT Total: ưu tiên chỉ tiêu bảng Turnover chính
+    ct_main = float(tgt_by_name.get(nv, 0) or 0)
+    ct_total = ct_main if ct_main > 0 else _sum_ct
+    row['CT Total'] = ct_total
     row['TH Total'] = _sum_th
     row['MTD Total'] = _sum_mtd
-    row['% Total'] = f'{round(_sum_mtd / _sum_ct * 100, 1) if _sum_ct else 0.0}%'
+    row['% Total'] = f'{round(_sum_mtd / ct_total * 100, 1) if ct_total else 0.0}%'
     rows.append(row)
+
   df_out = pd.DataFrame(rows)
   if df_out.empty:
     return empty
@@ -7941,6 +7988,7 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
     pass
   df_out = df_out.reset_index(drop=True)
   df_out.insert(0, 'STT', range(1, len(df_out) + 1))
+
   tot = {'STT': '-', 'Tên NVBH': f'SS {_ss_name()} Total'}
   for g in groups:
     ct = float(df_out[f'CT {g}'].sum())
@@ -7950,9 +7998,9 @@ def build_turnover_vip_ds(df, mcp_df, report_date, filter_nv=None, full_month=Fa
     tot[f'TH {g}'] = th
     tot[f'MTD {g}'] = mtd
     tot[f'% {g}'] = f'{round(mtd / ct * 100, 1) if ct else 0.0}%'
-  ct_t = float(df_out['CT Total'].sum()) if 'CT Total' in df_out.columns else 0.0
-  th_t = float(df_out['TH Total'].sum()) if 'TH Total' in df_out.columns else 0.0
-  mtd_t = float(df_out['MTD Total'].sum()) if 'MTD Total' in df_out.columns else 0.0
+  ct_t = float(df_out['CT Total'].sum())
+  th_t = float(df_out['TH Total'].sum())
+  mtd_t = float(df_out['MTD Total'].sum())
   tot['CT Total'] = ct_t
   tot['TH Total'] = th_t
   tot['MTD Total'] = mtd_t
@@ -22028,7 +22076,8 @@ if _nav == '📊 BÁO CÁO KPI':
           help='Tắt: MTD = ngày BC | Bật: MTD = luỹ kế 01 → ngày BC',
       )
       df_vip_ds = build_turnover_vip_ds(
-          df, mcp, report_date, filter_nv=filter_nv, full_month=bool(_fm_to)
+          df, mcp, report_date, filter_nv=filter_nv, full_month=bool(_fm_to),
+          turnover_targets=turnover_targets,
       )
       if df_vip_ds is not None and not df_vip_ds.empty:
         _mode = 'Full Tháng (01→ngày BC)' if _fm_to else f'Ngày {report_date.strftime("%d/%m/%Y")}'
@@ -22042,7 +22091,7 @@ if _nav == '📊 BÁO CÁO KPI':
             unsafe_allow_html=True,
         )
         st.caption(
-            'CT = Chỉ tiêu CH lịch VT ngày BC (Full Tháng = tổng tháng) | TH = DS ngày BC | '
+            'CT nhóm = chỉ tiêu outlet lịch VT | CT Total = Chỉ tiêu Turnover | TH = DS ngày BC | '
             + ('MTD = DS luỹ kế 01→ngày BC' if _fm_to else 'MTD = DS ngày BC')
         )
     except Exception as _e_vip:
