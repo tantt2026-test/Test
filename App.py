@@ -13973,7 +13973,7 @@ def build_muc_tieu_ngay(
   c_ma_nv = find_col(d, ['Mã NVBH', 'SM UID', 'Mã NV', 'Position code'])
   c_ch = find_col(d, ['Mã CH', 'Outlet Code', 'Outlet_code', 'Mã KH'])
   c_l1 = find_col(d, ['L1', 'x_msc_business_type_l1', 'Kênh', 'Channel'])
-  c_ds = find_col(d, ['Thành tiền', 'Thanh tien', 'Doanh số', 'Doanh Số', 'Amount', 'Net Amount'])
+  c_ds = find_col(d, ['Thành tiền trước CK', 'Thành tiền trước chiết khấu', 'Thành tiền', 'Thanh tien', 'Doanh số', 'Doanh Số', 'Amount', 'Net Amount'])
   c_sku = find_col(d, ['Mã sản phẩm', 'SKU', 'Product Code'])
   c_sp = find_col(d, ['Tên sản phẩm', 'Tên SP', 'Product Name'])
 
@@ -14049,14 +14049,43 @@ def build_muc_tieu_ngay(
 
   # Turnover targets
   def _tgt_so(sm, nv_name):
-    t = 0
-    if targets:
-      t = float(targets.get(sm, {}).get('TURNOVER', 0) or targets.get(sm, {}).get('Turnover', 0) or 0)
+    """CT tháng TURNOVER — cùng nguồn get_turnover_targets() như Hiệu Suất SellOut."""
+    to = {}
+    try:
+      to = get_turnover_targets() or {}
+    except Exception:
+      to = {}
+    # flat map: SM code → target
+    t = float(to.get(str(sm).strip(), 0) or 0)
+    if not t:
+      for c, n in (roster or {}).items():
+        if n == nv_name:
+          t = float(to.get(str(c).strip(), 0) or 0)
+          if t:
+            break
+    # fallback nested targets (build_report style)
+    if not t and targets:
+      ent = targets.get(sm, {}) if isinstance(targets, dict) else {}
+      if isinstance(ent, dict):
+        t = float(ent.get('TURNOVER', 0) or ent.get('Turnover', 0) or 0)
+      elif isinstance(ent, (int, float)):
+        t = float(ent)
       if not t:
         for c, n in (roster or {}).items():
           if n == nv_name:
-            t = float(targets.get(c, {}).get('TURNOVER', 0) or targets.get(c, {}).get('Turnover', 0) or 0)
-            break
+            ent = targets.get(c, {})
+            if isinstance(ent, dict):
+              t = float(ent.get('TURNOVER', 0) or ent.get('Turnover', 0) or 0)
+            elif isinstance(ent, (int, float)):
+              t = float(ent)
+            if t:
+              break
+    # match theo tên NV trong turnover map (nếu key là tên)
+    if not t and to:
+      for k, v in to.items():
+        if str(k).strip().upper() == str(nv_name).strip().upper():
+          t = float(v or 0)
+          break
     return t
 
   # MCP CH theo NV / ngày VT / kênh
@@ -14183,7 +14212,11 @@ def build_muc_tieu_ngay(
     # RPT theo NV
     d_nv = d[d['_nv'] == nv_name]
     if d_nv.empty:
-      d_nv = d[d['_sm'] == sm]
+      d_nv = d[d['_sm'] == str(sm).strip()]
+    if d_nv.empty and nv_name:
+      # match không phân biệt hoa thường / khoảng trắng
+      _nn = str(nv_name).strip().upper()
+      d_nv = d[d['_nv'].astype(str).str.strip().str.upper() == _nn]
     d_nv_day = d_nv[d_nv['date'] == rd]
     d_nv_t7 = d_nv[d_nv['date'] == t7]
     d_nv_mtd = d_nv[(d_nv['date'] >= month_start) & (d_nv['date'] <= rd)]
