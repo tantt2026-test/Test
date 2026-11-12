@@ -22579,7 +22579,7 @@ if _nav == '📊 BÁO CÁO KPI':
       df_new_on = pd.DataFrame()
     st.markdown(
         f'<h3 style="color:#034ea2;font-weight:800;margin-bottom:4px;'
-        f'font-size:64px;text-align:center;line-height:1.15;">TẠO MỚI KÊNH ON - CHUYÊN BEV'
+        f'font-size:clamp(22px, 4.5vw, 48px);text-align:center;line-height:1.15;">TẠO MỚI KÊNH ON - CHUYÊN BEV'
         f' — THÁNG {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -23122,7 +23122,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 4px;'
-        f' font-size: 64px; text-align: center; line-height: 1.15;">BÁO CÁO TỔNG HỢP MBS CAT'
+        f' font-size: clamp(22px, 4.5vw, 48px); text-align: center; line-height: 1.15;">BÁO CÁO TỔNG HỢP MBS CAT'
         f' - 6 NHÓM</h3>',
         unsafe_allow_html=True,
     )
@@ -23433,7 +23433,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 4px;'
-        f' font-size: 64px; text-align: center; line-height: 1.15;">BÁO CÁO TỔNG HỢP {_bn}'
+        f' font-size: clamp(22px, 4.5vw, 48px); text-align: center; line-height: 1.15;">BÁO CÁO TỔNG HỢP {_bn}'
         f' - 6 NHÓM</h3>',
         unsafe_allow_html=True,
     )
@@ -23971,7 +23971,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 2px;'
-        f' font-size: 64px; text-align: center; line-height: 1.15;">BÁO CÁO LỊCH VIẾNG THĂM & % ACTIVE'
+        f' font-size: clamp(22px, 4.5vw, 48px); text-align: center; line-height: 1.15;">BÁO CÁO LỊCH VIẾNG THĂM & % ACTIVE'
         f' {wname} ({week_type} - Tuần {iso_week}) - {report_date.strftime("%d/%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -24031,7 +24031,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
-        f' font-size: 64px; text-align: center; line-height: 1.15;">{title} - THÁNG'
+        f' font-size: clamp(22px, 4.5vw, 48px); text-align: center; line-height: 1.15;">{title} - THÁNG'
         f' {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -24181,7 +24181,7 @@ if _nav == '📊 BÁO CÁO KPI':
           df, mcp, df_visit_sched, report_date, turnover_targets, filter_nv
       )
       st.markdown(
-          f'<h3 style="color:#034ea2;font-weight:800;text-align:center;font-size:64px;line-height:1.15;">'
+          f'<h3 style="color:#034ea2;font-weight:800;text-align:center;font-size:clamp(22px, 4.5vw, 48px);line-height:1.15;">'
           f'{title_perf} - {report_date.strftime("%d/%m/%Y")}</h3>',
           unsafe_allow_html=True,
       )
@@ -25707,7 +25707,7 @@ if _nav == '📊 BÁO CÁO KPI':
       except Exception:
         _df_brand_mt = None
     st.markdown(
-        f'<h3 style="color:#034ea2;font-weight:800;margin-bottom:4px;font-size:64px;text-align:center;line-height:1.15;">'
+        f'<h3 style="color:#034ea2;font-weight:800;margin-bottom:4px;font-size:clamp(22px, 4.5vw, 48px);text-align:center;line-height:1.15;">'
         f'MỤC TIÊU NGÀY — {report_date.strftime("%d/%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -25871,7 +25871,7 @@ if _nav == '📊 BÁO CÁO KPI':
     pct_team = total_row[pct_col]
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
-        f' font-size: 64px; text-align: center; line-height: 1.15;">{title} - THÁNG'
+        f' font-size: clamp(22px, 4.5vw, 48px); text-align: center; line-height: 1.15;">{title} - THÁNG'
         f' {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -26159,7 +26159,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
-        f' font-size: 64px; text-align: center; line-height: 1.15;">BÁO CÁO ĐH COMBO (MATRIX OFF/ON) - THÁNG'
+        f' font-size: clamp(22px, 4.5vw, 48px); text-align: center; line-height: 1.15;">BÁO CÁO ĐH COMBO (MATRIX OFF/ON) - THÁNG'
         f' {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
