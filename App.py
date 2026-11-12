@@ -14025,15 +14025,14 @@ def build_muc_tieu_ngay(
         roster.setdefault(uid, nm)
 
   # Dedupe roster theo Tên NVBH (tránh 1 NV 2 dòng do nhiều SM UID)
+  # Lưu ý: KHÔNG dùng biến tên _nm (trùng hàm _nm bên trên)
   _by_name = {}
-  for _sm, _nm in roster.items():
-    _nm = str(_nm).strip()
-    if not _nm or _nm.lower() in ('nan', 'none', '', 'sm name'):
+  for _sm_key, _nv_name in roster.items():
+    _nv_name = str(_nv_name).strip()
+    if not _nv_name or _nv_name.lower() in ('nan', 'none', '', 'sm name'):
       continue
-    if _nm not in _by_name:
-      _by_name[_nm] = _sm
-  roster = {sm: nm for nm, sm in ((n, s) for n, s in _by_name.items())}
-  # đảo: sm -> name
+    if _nv_name not in _by_name:
+      _by_name[_nv_name] = _sm_key
   roster = {_by_name[nm]: nm for nm in _by_name}
 
   # Filter NV
