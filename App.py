@@ -14299,9 +14299,9 @@ def build_muc_tieu_ngay(
     hv_daisu_th = len(hv_daisu_chua & day_ch)
     hv_vip_mt = len(hv_vip_chua & t7_ch)
     hv_daisu_mt = len(hv_daisu_chua & t7_ch)
-    # % = TH/Active; chưa có TH → MT(T-7)/Active
-    hv_vip_pct = _pct(hv_vip_th if hv_vip_th else hv_vip_mt, hv_vip_active)
-    hv_daisu_pct = _pct(hv_daisu_th if hv_daisu_th else hv_daisu_mt, hv_daisu_active)
+    # %: có TH → TH/Active; chưa TH → Active/Chưa PSDS (mục tiêu ~80%)
+    hv_vip_pct = _pct(hv_vip_th, hv_vip_active) if hv_vip_th else _pct(hv_vip_active, len(hv_vip_chua))
+    hv_daisu_pct = _pct(hv_daisu_th, hv_daisu_active) if hv_daisu_th else _pct(hv_daisu_active, len(hv_daisu_chua))
 
     # 6. Combo
     imp_off = (plan_off | plan_on) & combo_off_all  # theo kênh OFF list
@@ -14331,9 +14331,9 @@ def build_muc_tieu_ngay(
     combo_on_th = len(pool_on & day_ch)
     combo_off_mt = len(pool_off & _t7_ch)
     combo_on_mt = len(pool_on & _t7_ch)
-    # % có TH → TH/Import; chưa TH → MT(T-7)/Import
-    combo_off_pct = _pct(combo_off_th if combo_off_th else combo_off_mt, len(imp_off))
-    combo_on_pct = _pct(combo_on_th if combo_on_th else combo_on_mt, len(imp_on))
+    # %: có TH → TH/Import; chưa TH → Tham Gia/Import (mục tiêu)
+    combo_off_pct = _pct(combo_off_th, len(imp_off)) if combo_off_th else _pct(tg_off, len(imp_off))
+    combo_on_pct = _pct(combo_on_th, len(imp_on)) if combo_on_th else _pct(tg_on, len(imp_on))
 
     rows.append({
         'Tên NVBH': nv_name,
@@ -14344,11 +14344,12 @@ def build_muc_tieu_ngay(
         'ASO OFF New': new_off,
         'ASO OFF Chưa PSDS': len(chua_off),
         'ASO OFF TH': th_aso_off,
-        'ASO OFF %': f'{_pct(th_aso_off if th_aso_off else mt_aso_off, new_off)}%',
+        # %: có TH → TH/New ASO; chưa TH → New ASO/Chưa PSDS (mục tiêu)
+        'ASO OFF %': f'{_pct(th_aso_off, new_off) if th_aso_off else _pct(new_off, len(chua_off))}%',
         'ASO ON New': new_on,
         'ASO ON Chưa PSDS': len(chua_on),
         'ASO ON TH': th_aso_on,
-        'ASO ON %': f'{_pct(th_aso_on if th_aso_on else mt_aso_on, new_on)}%',
+        'ASO ON %': f'{_pct(th_aso_on, new_on) if th_aso_on else _pct(new_on, len(chua_on))}%',
         'PC OFF T-7': len(pc_off_t7),
         'PC OFF Call Plan': cp_off,
         'PC OFF TH': len(pc_off_th),
@@ -14409,16 +14410,21 @@ def build_muc_tieu_ngay(
   tot['LPPC TH'] = _avg_col('LPPC TH')
   # % totals
   tot['SO %'] = f"{_pct(tot['SO TH'] if tot['SO TH'] else tot['SO MT(T-7)'], tot['SO CT'])}%"
-  tot['ASO OFF %'] = f"{_pct(tot['ASO OFF TH'], tot['ASO OFF New'])}%"
-  tot['ASO ON %'] = f"{_pct(tot['ASO ON TH'], tot['ASO ON New'])}%"
+  _aso_off_th, _aso_off_new, _aso_off_chua = tot['ASO OFF TH'], tot['ASO OFF New'], tot['ASO OFF Chưa PSDS']
+  _aso_on_th, _aso_on_new, _aso_on_chua = tot['ASO ON TH'], tot['ASO ON New'], tot['ASO ON Chưa PSDS']
+  tot['ASO OFF %'] = f"{_pct(_aso_off_th, _aso_off_new) if _aso_off_th else _pct(_aso_off_new, _aso_off_chua)}%"
+  tot['ASO ON %'] = f"{_pct(_aso_on_th, _aso_on_new) if _aso_on_th else _pct(_aso_on_new, _aso_on_chua)}%"
   tot['PC OFF %'] = f"{_pct(tot['PC OFF TH'] if tot['PC OFF TH'] else tot['PC OFF T-7'], tot['PC OFF Call Plan'])}%"
   tot['PC ON %'] = f"{_pct(tot['PC ON TH'] if tot['PC ON TH'] else tot['PC ON T-7'], tot['PC ON Call Plan'])}%"
-  # % Total: có TH → TH/CT; chưa TH → giữ 0% (MT T-7 đã phản ánh trên từng dòng NV)
   tot['LPPC %'] = f"{_pct(tot['LPPC TH'], tot['LPPC CT'])}%"
-  tot['HV VIP %'] = f"{_pct(tot['HV VIP TH'], tot['HV VIP Active'])}%"
-  tot['HV DAISU %'] = f"{_pct(tot['HV DAISU TH'], tot['HV DAISU Active'])}%"
-  tot['Combo OFF %'] = f"{_pct(tot['Combo OFF TH'], tot['Combo OFF Import'])}%"
-  tot['Combo ON %'] = f"{_pct(tot['Combo ON TH'], tot['Combo ON Import'])}%"
+  _hv_v_th, _hv_v_act, _hv_v_chua = tot['HV VIP TH'], tot['HV VIP Active'], tot['HV VIP Chưa PSDS']
+  _hv_d_th, _hv_d_act, _hv_d_chua = tot['HV DAISU TH'], tot['HV DAISU Active'], tot['HV DAISU Chưa PSDS']
+  tot['HV VIP %'] = f"{_pct(_hv_v_th, _hv_v_act) if _hv_v_th else _pct(_hv_v_act, _hv_v_chua)}%"
+  tot['HV DAISU %'] = f"{_pct(_hv_d_th, _hv_d_act) if _hv_d_th else _pct(_hv_d_act, _hv_d_chua)}%"
+  _cb_o_th, _cb_o_tg, _cb_o_imp = tot['Combo OFF TH'], tot['Combo OFF Tham Gia'], tot['Combo OFF Import']
+  _cb_n_th, _cb_n_tg, _cb_n_imp = tot['Combo ON TH'], tot['Combo ON Tham Gia'], tot['Combo ON Import']
+  tot['Combo OFF %'] = f"{_pct(_cb_o_th, _cb_o_imp) if _cb_o_th else _pct(_cb_o_tg, _cb_o_imp)}%"
+  tot['Combo ON %'] = f"{_pct(_cb_n_th, _cb_n_imp) if _cb_n_th else _pct(_cb_n_tg, _cb_n_imp)}%"
   df_out = pd.concat([df_out, pd.DataFrame([tot])], ignore_index=True)
   return df_out
 
@@ -25744,10 +25750,25 @@ if _nav == '📊 BÁO CÁO KPI':
           return 0.0
 
       def _pct_card(th, mt, ct):
-        """Có TH ngày → TH/CT; chưa có TH → MT(T-7)/CT."""
+        """Có TH ngày → TH/CT; chưa có TH → MT/CT (MT có thể là New/Active/Tham gia)."""
         if ct and ct > 0:
           base = th if th and th > 0 else mt
           return f'{round(base / ct * 100, 1)}%'
+        return '0%'
+
+      def _pct_mt_goal(th, goal, base):
+        """Có TH → TH/goal; chưa TH → goal/base (mục tiêu)."""
+        if th and th > 0 and goal and goal > 0:
+          return f'{round(th / goal * 100, 1)}%'
+        if goal and base and base > 0:
+          return f'{round(goal / base * 100, 1)}%'
+        return '0%'
+
+      def _pct_combo(th, tg, imp):
+        if th and th > 0 and imp and imp > 0:
+          return f'{round(th / imp * 100, 1)}%'
+        if tg and imp and imp > 0:
+          return f'{round(tg / imp * 100, 1)}%'
         return '0%'
 
       so_th, so_mt, so_ct = _ni('SO TH'), _ni('SO MT(T-7)'), _ni('SO CT')
@@ -25775,13 +25796,13 @@ if _nav == '📊 BÁO CÁO KPI':
       with r1[1]:
         render_metric_card(
             'ASO OFF',
-            f'{aso_off_th}/{aso_off_new}/{_pct_card(aso_off_th, 0, aso_off_new)}',
+            f'{aso_off_th}/{aso_off_new}/{_pct_mt_goal(aso_off_th, aso_off_new, _ni("ASO OFF Chưa PSDS"))}',
             icon='🏪', value_color='#034ea2',
         )
       with r1[2]:
         render_metric_card(
             'ASO ON',
-            f'{aso_on_th}/{aso_on_new}/{_pct_card(aso_on_th, 0, aso_on_new)}',
+            f'{aso_on_th}/{aso_on_new}/{_pct_mt_goal(aso_on_th, aso_on_new, _ni("ASO ON Chưa PSDS"))}',
             icon='🛒', value_color='#034ea2',
         )
       with r1[3]:
@@ -25806,25 +25827,25 @@ if _nav == '📊 BÁO CÁO KPI':
       with r2[1]:
         render_metric_card(
             'HV BRAND_VIP',
-            f'{hv_v_th}/{hv_v_act}/{_pct_card(hv_v_th, 0, hv_v_act)}',
+            f'{hv_v_th}/{hv_v_act}/{_pct_mt_goal(hv_v_th, hv_v_act, _ni("HV VIP Chưa PSDS"))}',
             icon='👑', value_color='#034ea2',
         )
       with r2[2]:
         render_metric_card(
             'HV VIPDAISU',
-            f'{hv_d_th}/{hv_d_act}/{_pct_card(hv_d_th, 0, hv_d_act)}',
+            f'{hv_d_th}/{hv_d_act}/{_pct_mt_goal(hv_d_th, hv_d_act, _ni("HV DAISU Chưa PSDS"))}',
             icon='⭐', value_color='#034ea2',
         )
       with r2[3]:
         render_metric_card(
             'COMBO OFF',
-            f'{cb_off_th}/{cb_off_imp}/{_pct_card(cb_off_th, 0, cb_off_imp)}',
+            f'{cb_off_th}/{cb_off_imp}/{_pct_combo(cb_off_th, cb_off_tg, cb_off_imp)}',
             icon='🎁', value_color='#034ea2',
         )
       with r2[4]:
         render_metric_card(
             'COMBO ON',
-            f'{cb_on_th}/{cb_on_imp}/{_pct_card(cb_on_th, 0, cb_on_imp)}',
+            f'{cb_on_th}/{cb_on_imp}/{_pct_combo(cb_on_th, cb_on_tg, cb_on_imp)}',
             icon='🎯', value_color='#034ea2',
         )
       st.caption('Metric: TH/CT/% — Có TH ngày → % = TH/CT; chưa có TH → % = MT(T-7)/CT.')
