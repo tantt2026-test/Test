@@ -14344,12 +14344,12 @@ def build_muc_tieu_ngay(
         'ASO OFF New': new_off,
         'ASO OFF Chưa PSDS': len(chua_off),
         'ASO OFF TH': th_aso_off,
-        # %: có TH → TH/New ASO; chưa TH → New ASO/Chưa PSDS (mục tiêu)
-        'ASO OFF %': f'{_pct(th_aso_off, new_off) if th_aso_off else _pct(new_off, len(chua_off))}%',
+        # %: có TH → TH/Chưa PSDS; chưa TH → New ASO/Chưa PSDS
+        'ASO OFF %': f'{_pct(th_aso_off, len(chua_off)) if th_aso_off else _pct(new_off, len(chua_off))}%',
         'ASO ON New': new_on,
         'ASO ON Chưa PSDS': len(chua_on),
         'ASO ON TH': th_aso_on,
-        'ASO ON %': f'{_pct(th_aso_on, new_on) if th_aso_on else _pct(new_on, len(chua_on))}%',
+        'ASO ON %': f'{_pct(th_aso_on, len(chua_on)) if th_aso_on else _pct(new_on, len(chua_on))}%',
         'PC OFF T-7': len(pc_off_t7),
         'PC OFF Call Plan': cp_off,
         'PC OFF TH': len(pc_off_th),
@@ -14412,8 +14412,8 @@ def build_muc_tieu_ngay(
   tot['SO %'] = f"{_pct(tot['SO TH'] if tot['SO TH'] else tot['SO MT(T-7)'], tot['SO CT'])}%"
   _aso_off_th, _aso_off_new, _aso_off_chua = tot['ASO OFF TH'], tot['ASO OFF New'], tot['ASO OFF Chưa PSDS']
   _aso_on_th, _aso_on_new, _aso_on_chua = tot['ASO ON TH'], tot['ASO ON New'], tot['ASO ON Chưa PSDS']
-  tot['ASO OFF %'] = f"{_pct(_aso_off_th, _aso_off_new) if _aso_off_th else _pct(_aso_off_new, _aso_off_chua)}%"
-  tot['ASO ON %'] = f"{_pct(_aso_on_th, _aso_on_new) if _aso_on_th else _pct(_aso_on_new, _aso_on_chua)}%"
+  tot['ASO OFF %'] = f"{_pct(_aso_off_th, _aso_off_chua) if _aso_off_th else _pct(_aso_off_new, _aso_off_chua)}%"
+  tot['ASO ON %'] = f"{_pct(_aso_on_th, _aso_on_chua) if _aso_on_th else _pct(_aso_on_new, _aso_on_chua)}%"
   tot['PC OFF %'] = f"{_pct(tot['PC OFF TH'] if tot['PC OFF TH'] else tot['PC OFF T-7'], tot['PC OFF Call Plan'])}%"
   tot['PC ON %'] = f"{_pct(tot['PC ON TH'] if tot['PC ON TH'] else tot['PC ON T-7'], tot['PC ON Call Plan'])}%"
   tot['LPPC %'] = f"{_pct(tot['LPPC TH'], tot['LPPC CT'])}%"
@@ -25771,6 +25771,14 @@ if _nav == '📊 BÁO CÁO KPI':
           return f'{round(tg / imp * 100, 1)}%'
         return '0%'
 
+      def _pct_aso(th, new_aso, chua):
+        # có TH → TH/Chưa PSDS; chưa TH → New ASO/Chưa PSDS
+        if th and th > 0 and chua and chua > 0:
+          return f'{round(th / chua * 100, 1)}%'
+        if new_aso and chua and chua > 0:
+          return f'{round(new_aso / chua * 100, 1)}%'
+        return '0%'
+
       so_th, so_mt, so_ct = _ni('SO TH'), _ni('SO MT(T-7)'), _ni('SO CT')
       aso_off_th, aso_off_new, aso_off_chua = _ni('ASO OFF TH'), _ni('ASO OFF New'), _ni('ASO OFF Chưa PSDS')
       aso_on_th, aso_on_new, aso_on_chua = _ni('ASO ON TH'), _ni('ASO ON New'), _ni('ASO ON Chưa PSDS')
@@ -25796,13 +25804,13 @@ if _nav == '📊 BÁO CÁO KPI':
       with r1[1]:
         render_metric_card(
             'ASO OFF',
-            f'{aso_off_th}/{aso_off_new}/{_pct_mt_goal(aso_off_th, aso_off_new, _ni("ASO OFF Chưa PSDS"))}',
+            f'{aso_off_th}/{aso_off_new}/{_pct_aso(aso_off_th, aso_off_new, _ni("ASO OFF Chưa PSDS"))}',
             icon='🏪', value_color='#034ea2',
         )
       with r1[2]:
         render_metric_card(
             'ASO ON',
-            f'{aso_on_th}/{aso_on_new}/{_pct_mt_goal(aso_on_th, aso_on_new, _ni("ASO ON Chưa PSDS"))}',
+            f'{aso_on_th}/{aso_on_new}/{_pct_aso(aso_on_th, aso_on_new, _ni("ASO ON Chưa PSDS"))}',
             icon='🛒', value_color='#034ea2',
         )
       with r1[3]:
