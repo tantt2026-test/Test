@@ -14024,6 +14024,18 @@ def build_muc_tieu_ngay(
         uid = _nm(r[c_mcp_uid]) if c_mcp_uid else nm
         roster.setdefault(uid, nm)
 
+  # Dedupe roster theo Tên NVBH (tránh 1 NV 2 dòng do nhiều SM UID)
+  _by_name = {}
+  for _sm, _nm in roster.items():
+    _nm = str(_nm).strip()
+    if not _nm or _nm.lower() in ('nan', 'none', '', 'sm name'):
+      continue
+    if _nm not in _by_name:
+      _by_name[_nm] = _sm
+  roster = {sm: nm for nm, sm in ((n, s) for n, s in _by_name.items())}
+  # đảo: sm -> name
+  roster = {_by_name[nm]: nm for nm in _by_name}
+
   # Filter NV
   if nv_selected(filter_nv):
     allow = set(str(x).strip() for x in (filter_nv if isinstance(filter_nv, (list, tuple, set)) else [filter_nv]))
@@ -14079,29 +14091,42 @@ def build_muc_tieu_ngay(
   d_day = d[d['date'] == rd]
   d_t7 = d[d['date'] == t7]
 
-  # LPPC helper: line MOQ / PC, trừ Meat/Beer, PC >= 1 line
+  # LPPC helper — cùng logic Báo Cáo LPPC KPI:
+  # trừ Meat/Beer, line đạt MOQ, PC ≥1 line MOQ, max 1 PC/CH/ngày
   def _lppc_of(df_src):
     if df_src is None or df_src.empty:
       return 0.0
-    x = df_src.copy()
-    if c_sp and 'Tên SP lower' not in x.columns:
-      x['Tên SP lower'] = x[c_sp].astype(str).str.lower()
-    sub = x['Sub Division'].astype(str) if 'Sub Division' in x.columns else pd.Series('', index=x.index)
-    name = x['Tên SP lower'] if 'Tên SP lower' in x.columns else pd.Series('', index=x.index)
-    is_ex = sub.str.contains('Beer|Bia|Processed Meats|Thịt chế biến', case=False, na=False) | name.str.contains(
-        r'\b(bia|beer|giò|chả|pate|xúc xích|hotdog|thịt nguội)\b', case=False, na=False, regex=True
-    )
-    x = x[~is_ex]
-    if x.empty:
+    try:
+      x = df_src.copy()
+      if 'Tên SP lower' not in x.columns:
+        _csp = c_sp or find_col(x, ['Tên sản phẩm', 'Tên SP'])
+        x['Tên SP lower'] = x[_csp].astype(str).str.lower() if _csp else ''
+      if 'Mã NVBH' not in x.columns and '_sm' in x.columns:
+        x['Mã NVBH'] = x['_sm']
+      if 'Mã CH' not in x.columns and '_ma' in x.columns:
+        x['Mã CH'] = x['_ma']
+      sub = x['Sub Division'].astype(str) if 'Sub Division' in x.columns else pd.Series('', index=x.index)
+      name = x['Tên SP lower']
+      is_ex = sub.str.contains(
+          'Beer|Bia|Processed Meats|Thịt chế biến', case=False, na=False
+      ) | name.str.contains(
+          'beer|bia lush|white lion|red ruby|xúc xích|xuc xich|ponnie|'
+          'cao bồi|cao boi|hotdog|thịt viên|chân gà',
+          na=False,
+      )
+      x = x[~is_ex]
+      if x.empty:
+        return 0.0
+      order_moq = count_moq_lines_per_order(x)
+      ok = order_moq[order_moq['n_moq_lines'] >= 1]
+      if ok.empty:
+        return 0.0
+      ok_day = pick_best_pc_per_outlet_day(ok)
+      n_pc = len(ok_day)
+      n_line = int(ok_day['n_moq_lines'].sum()) if n_pc else 0
+      return round(n_line / n_pc, 2) if n_pc else 0.0
+    except Exception:
       return 0.0
-    # PC = unique CH/ngày có ≥1 line (đơn giản: unique CH trong ngày)
-    # Line = unique SKU theo CH/ngày
-    if c_sku:
-      lines = x.groupby(['_ma', 'date'])[c_sku].nunique().sum()
-    else:
-      lines = len(x)
-    pcs = x.groupby(['_ma', 'date']).ngroups
-    return round(float(lines) / pcs, 2) if pcs else 0.0
 
   # Brand HV sets
   def _hv_sets(member_key):
@@ -14168,7 +14193,7 @@ def build_muc_tieu_ngay(
     so_mt = float(d_nv_t7['_sales'].sum()) if not d_nv_t7.empty else 0.0
     so_ct = int(round(_tgt_so(sm, nv_name) / tot_wd, 0)) if tot_wd else 0
     so_th = float(d_nv_day['_sales'].sum()) if not d_nv_day.empty else 0.0
-    so_pct = _pct(so_th, so_ct)
+    so_pct = _pct(so_th if so_th > 0 else so_mt, so_ct)
 
     # MCP visit day
     plan_off, plan_on = _mcp_ch_sets(nv_name)
@@ -14254,11 +14279,11 @@ def build_muc_tieu_ngay(
         'PC OFF T-7': len(pc_off_t7),
         'PC OFF Call Plan': cp_off,
         'PC OFF TH': len(pc_off_th),
-        'PC OFF %': f'{_pct(len(pc_off_th), cp_off)}%',
+        'PC OFF %': f'{_pct(len(pc_off_th) if pc_off_th else len(pc_off_t7), cp_off)}%',
         'PC ON T-7': len(pc_on_t7),
         'PC ON Call Plan': cp_on,
         'PC ON TH': len(pc_on_th),
-        'PC ON %': f'{_pct(len(pc_on_th), cp_on)}%',
+        'PC ON %': f'{_pct(len(pc_on_th) if pc_on_th else len(pc_on_t7), cp_on)}%',
         'LPPC CT': lppc_ct,
         'LPPC TH': lppc_th,
         'LPPC %': f'{lppc_pct}%',
@@ -14310,11 +14335,11 @@ def build_muc_tieu_ngay(
   tot['LPPC CT'] = 5.0
   tot['LPPC TH'] = _avg_col('LPPC TH')
   # % totals
-  tot['SO %'] = f"{_pct(tot['SO TH'], tot['SO CT'])}%"
+  tot['SO %'] = f"{_pct(tot['SO TH'] if tot['SO TH'] else tot['SO MT(T-7)'], tot['SO CT'])}%"
   tot['ASO OFF %'] = f"{_pct(tot['ASO OFF TH'], tot['ASO OFF New'])}%"
   tot['ASO ON %'] = f"{_pct(tot['ASO ON TH'], tot['ASO ON New'])}%"
-  tot['PC OFF %'] = f"{_pct(tot['PC OFF TH'], tot['PC OFF Call Plan'])}%"
-  tot['PC ON %'] = f"{_pct(tot['PC ON TH'], tot['PC ON Call Plan'])}%"
+  tot['PC OFF %'] = f"{_pct(tot['PC OFF TH'] if tot['PC OFF TH'] else tot['PC OFF T-7'], tot['PC OFF Call Plan'])}%"
+  tot['PC ON %'] = f"{_pct(tot['PC ON TH'] if tot['PC ON TH'] else tot['PC ON T-7'], tot['PC ON Call Plan'])}%"
   tot['LPPC %'] = f"{_pct(tot['LPPC TH'], tot['LPPC CT'])}%"
   tot['HV VIP %'] = f"{_pct(tot['HV VIP TH'], tot['HV VIP Chưa PSDS'])}%"
   tot['HV DAISU %'] = f"{_pct(tot['HV DAISU TH'], tot['HV DAISU Chưa PSDS'])}%"
@@ -15005,7 +15030,9 @@ def build_performance_report(
     pct_off = round(len(pc_off) / len(da_off) * 100, 1) if da_off else 0.0
     pct_on = round(len(pc_on) / len(da_on) * 100, 1) if da_on else 0.0
 
-    # LPPC OFF giống KPI: trừ Meat/Beer, line đạt MOQ, PC ≥1 line MOQ, max 1 PC/CH/ngày
+    # LPPC — cùng logic Báo Cáo LPPC KPI:
+    # trừ Meat/Beer, line đạt MOQ, PC ≥1 line MOQ, max 1 PC/CH/ngày (pick_best_pc_per_outlet_day)
+    # Scope Hiệu Suất: chỉ Kênh OFF (giữ cột LPPC OFF)
     d_off = (
         d_nv[d_nv['_ma'].map(lambda m: not _is_on(m))]
         if not d_nv.empty
@@ -15019,6 +15046,10 @@ def build_performance_report(
         _d = d_off.copy()
         if 'Tên SP lower' not in _d.columns and 'Tên sản phẩm' in _d.columns:
           _d['Tên SP lower'] = _d['Tên sản phẩm'].astype(str).str.lower()
+        if 'Mã NVBH' not in _d.columns and '_sm' in _d.columns:
+          _d['Mã NVBH'] = _d['_sm']
+        if 'Mã CH' not in _d.columns and '_ma' in _d.columns:
+          _d['Mã CH'] = _d['_ma']
         _sub = _d['Sub Division'].astype(str) if 'Sub Division' in _d.columns else pd.Series('', index=_d.index)
         _name = _d['Tên SP lower'] if 'Tên SP lower' in _d.columns else pd.Series('', index=_d.index)
         _ex = _sub.str.contains(
@@ -15033,7 +15064,6 @@ def build_performance_report(
           order_moq = count_moq_lines_per_order(_d)
           ok = order_moq[order_moq['n_moq_lines'] >= 1]
           ok_day = pick_best_pc_per_outlet_day(ok)
-          # chỉ ngày BC
           if 'date' in ok_day.columns:
             ok_day = ok_day[ok_day['date'] == rd]
           n_dh_off = int(len(ok_day))
@@ -25610,9 +25640,102 @@ if _nav == '📊 BÁO CÁO KPI':
     except Exception as _e_mtn:
       st.error(f'Lỗi Mục Tiêu Ngày: {_e_mtn}')
       df_mtn = None
+
     if df_mtn is None or df_mtn.empty:
       st.warning('Không có dữ liệu Mục Tiêu Ngày.')
     else:
+      # ---- Metric Cards Total Team ----
+      _tot = df_mtn[df_mtn['Tên NVBH'].astype(str).str.upper().str.contains('TOTAL')].iloc[-1] if \
+          any('TOTAL' in str(x).upper() for x in df_mtn['Tên NVBH']) else df_mtn.iloc[-1]
+
+      def _ni(col):
+        try:
+          return int(float(pd.to_numeric(_tot.get(col, 0), errors='coerce') or 0))
+        except Exception:
+          return 0
+
+      def _nf(col):
+        try:
+          return float(pd.to_numeric(_tot.get(col, 0), errors='coerce') or 0)
+        except Exception:
+          return 0.0
+
+      def _pct_card(th, mt, ct):
+        """Có TH ngày → TH/CT; chưa có TH → MT(T-7)/CT."""
+        if ct and ct > 0:
+          base = th if th and th > 0 else mt
+          return f'{round(base / ct * 100, 1)}%'
+        return '0%'
+
+      so_th, so_mt, so_ct = _ni('SO TH'), _ni('SO MT(T-7)'), _ni('SO CT')
+      aso_off_th, aso_off_new, aso_off_chua = _ni('ASO OFF TH'), _ni('ASO OFF New'), _ni('ASO OFF Chưa PSDS')
+      aso_on_th, aso_on_new, aso_on_chua = _ni('ASO ON TH'), _ni('ASO ON New'), _ni('ASO ON Chưa PSDS')
+      pc_off_th, pc_off_t7, pc_off_cp = _ni('PC OFF TH'), _ni('PC OFF T-7'), _ni('PC OFF Call Plan')
+      pc_on_th, pc_on_t7, pc_on_cp = _ni('PC ON TH'), _ni('PC ON T-7'), _ni('PC ON Call Plan')
+      lppc_th, lppc_ct = _nf('LPPC TH'), _nf('LPPC CT') or 5.0
+      hv_v_th, hv_v_act, hv_v_chua = _ni('HV VIP TH'), _ni('HV VIP Active'), _ni('HV VIP Chưa PSDS')
+      hv_d_th, hv_d_act, hv_d_chua = _ni('HV DAISU TH'), _ni('HV DAISU Active'), _ni('HV DAISU Chưa PSDS')
+      cb_off_th, cb_off_tg, cb_off_imp = _ni('Combo OFF TH'), _ni('Combo OFF Tham Gia'), _ni('Combo OFF Import')
+      cb_on_th, cb_on_tg, cb_on_imp = _ni('Combo ON TH'), _ni('Combo ON Tham Gia'), _ni('Combo ON Import')
+
+      st.markdown(
+          '<div style="font-weight:800;color:#034ea2;font-size:13px;margin:6px 0 4px;">📊 TOTAL TEAM</div>',
+          unsafe_allow_html=True,
+      )
+      r1 = st.columns(5)
+      with r1[0]:
+        render_metric_card(
+            'SO TURNOVER',
+            f'{so_th:,}/{so_ct:,}/{_pct_card(so_th, so_mt, so_ct)}'.replace(',', '.'),
+        )
+      with r1[1]:
+        render_metric_card(
+            'ASO OFF',
+            f'{aso_off_th}/{aso_off_new}/{_pct_card(aso_off_th, 0, aso_off_new)}',
+        )
+      with r1[2]:
+        render_metric_card(
+            'ASO ON',
+            f'{aso_on_th}/{aso_on_new}/{_pct_card(aso_on_th, 0, aso_on_new)}',
+        )
+      with r1[3]:
+        render_metric_card(
+            'PC/VT OFF',
+            f'{pc_off_th}/{pc_off_cp}/{_pct_card(pc_off_th, pc_off_t7, pc_off_cp)}',
+        )
+      with r1[4]:
+        render_metric_card(
+            'PC/VT ON',
+            f'{pc_on_th}/{pc_on_cp}/{_pct_card(pc_on_th, pc_on_t7, pc_on_cp)}',
+        )
+      r2 = st.columns(5)
+      with r2[0]:
+        render_metric_card(
+            'LPPC',
+            f'{lppc_th}/{lppc_ct}/{_pct_card(lppc_th, 0, lppc_ct)}',
+        )
+      with r2[1]:
+        render_metric_card(
+            'HV BRAND_VIP',
+            f'{hv_v_th}/{hv_v_act}/{_pct_card(hv_v_th, 0, hv_v_act)}',
+        )
+      with r2[2]:
+        render_metric_card(
+            'HV VIPDAISU',
+            f'{hv_d_th}/{hv_d_act}/{_pct_card(hv_d_th, 0, hv_d_act)}',
+        )
+      with r2[3]:
+        render_metric_card(
+            'COMBO OFF',
+            f'{cb_off_th}/{cb_off_tg}/{_pct_card(cb_off_th, 0, cb_off_tg)}',
+        )
+      with r2[4]:
+        render_metric_card(
+            'COMBO ON',
+            f'{cb_on_th}/{cb_on_tg}/{_pct_card(cb_on_th, 0, cb_on_tg)}',
+        )
+      st.caption('Metric: TH/CT/% — % dùng TH/CT khi đã có TH ngày; chưa có TH thì % = MT(T-7)/CT (PC/SO).')
+
       st.markdown(render_muc_tieu_ngay_html(df_mtn), unsafe_allow_html=True)
       st.download_button(
           '📥 Tải CSV Mục Tiêu Ngày',
