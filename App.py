@@ -14205,6 +14205,16 @@ def build_muc_tieu_ngay(
   def _ceil_pct(n, p):
     return int(math.ceil(n * p)) if n else 0
 
+  def _fmt_vn(n):
+    """1000000 → 1.000.000"""
+    try:
+      if n is None or (isinstance(n, float) and pd.isna(n)):
+        return '0'
+      n = int(round(float(n)))
+      return f'{n:,}'.replace(',', '.')
+    except Exception:
+      return str(n)
+
   rows = []
   for sm, nv_name in sorted(roster.items(), key=lambda x: x[1] or ''):
     if not nv_name or str(nv_name).lower() in ('nan', 'none', 'sm name'):
@@ -14241,11 +14251,12 @@ def build_muc_tieu_ngay(
       first_dates = d_nv_mtd.groupby('_ma')['date'].min().to_dict()
     th_aso_off = sum(1 for ma in chua_off | (plan_off & set(first_dates)) if first_dates.get(ma) == rd and ma in plan_off)
     # Chính xác hơn: CH thuộc plan ngày BC, first_date == rd
-    th_aso_off = sum(1 for ma in plan_off if first_dates.get(ma) == rd)
-    th_aso_on = sum(1 for ma in plan_on if first_dates.get(ma) == rd)
-    # MT (T-7): CH lịch VT ngày BC có đơn đầu tiên đúng T-7
-    mt_aso_off = sum(1 for ma in plan_off if first_dates.get(ma) == t7)
-    mt_aso_on = sum(1 for ma in plan_on if first_dates.get(ma) == t7)
+    # TH chỉ trên danh sách Chưa PSDS (không lấy total CH có ĐH trong ngày)
+    th_aso_off = sum(1 for ma in chua_off if first_dates.get(ma) == rd)
+    th_aso_on = sum(1 for ma in chua_on if first_dates.get(ma) == rd)
+    # MT (T-7): trong pool Chưa PSDS (tính tại ngày BC) có first_date = T-7
+    mt_aso_off = sum(1 for ma in chua_off if first_dates.get(ma) == t7)
+    mt_aso_on = sum(1 for ma in chua_on if first_dates.get(ma) == t7)
     new_off = _ceil_pct(len(chua_off), 0.75)
     new_on = _ceil_pct(len(chua_on), 0.75)
 
@@ -14280,12 +14291,13 @@ def build_muc_tieu_ngay(
     hv_daisu_active = _ceil_pct(len(hv_daisu_chua), 0.80)
     # TH: CH trong plan HV có first_date == rd hoặc có ĐH ngày BC
     day_ch = set(d_nv_day['_ma'].unique()) if not d_nv_day.empty else set()
-    hv_vip_th = len((hv_vip_plan & day_ch))
-    hv_daisu_th = len((hv_daisu_plan & day_ch))
+    # TH chỉ trên Chưa PSDS (HV plan ngày VT ∩ chưa có DS tháng)
+    hv_vip_th = len(hv_vip_chua & day_ch)
+    hv_daisu_th = len(hv_daisu_chua & day_ch)
     t7_ch = set(d_nv_t7['_ma'].unique()) if not d_nv_t7.empty else set()
-    hv_vip_mt = len((hv_vip_plan & t7_ch))
-    hv_daisu_mt = len((hv_daisu_plan & t7_ch))
-    # % = TH/CT(Active); chưa có TH → MT(T-7)/Active
+    hv_vip_mt = len(hv_vip_chua & t7_ch)
+    hv_daisu_mt = len(hv_daisu_chua & t7_ch)
+    # % = TH/Active; chưa có TH → MT(T-7)/Active
     hv_vip_pct = _pct(hv_vip_th if hv_vip_th else hv_vip_mt, hv_vip_active)
     hv_daisu_pct = _pct(hv_daisu_th if hv_daisu_th else hv_daisu_mt, hv_daisu_active)
 
@@ -14297,13 +14309,29 @@ def build_muc_tieu_ngay(
     tg_off = _ceil_pct(len(imp_off), 0.45)
     tg_on = _ceil_pct(len(imp_on), 0.35)
     _t7_ch = set(d_nv_t7['_ma'].unique()) if not d_nv_t7.empty else set()
-    combo_off_th = len(imp_off & day_ch)
-    combo_on_th = len(imp_on & day_ch)
-    combo_off_mt = len(imp_off & _t7_ch)
-    combo_on_mt = len(imp_on & _t7_ch)
-    # % = TH/Tham Gia; chưa có TH → MT(T-7)/Tham Gia
-    combo_off_pct = _pct(combo_off_th if combo_off_th else combo_off_mt, tg_off)
-    combo_on_pct = _pct(combo_on_th if combo_on_th else combo_on_mt, tg_on)
+    # TH = số CH (unique) thuộc Import có phát sinh ĐH trong ngày — không đếm suất
+    # Chỉ lấy CH trong danh sách Import (chưa phát sinh combo trước đó trong tháng nếu có thể)
+    # CH đã mua combo MTD (trước ngày BC) → loại khỏi pool "chưa phát sinh"
+    def _combo_bought_before(df_src, before_day, import_set):
+      if df_src is None or df_src.empty or not import_set:
+        return set()
+      sub = df_src[(df_src['date'] >= month_start) & (df_src['date'] < before_day)]
+      if sub.empty:
+        return set()
+      return set(sub['_ma'].unique()) & import_set
+
+    bought_off_before = _combo_bought_before(d_nv, rd, imp_off)
+    bought_on_before = _combo_bought_before(d_nv, rd, imp_on)
+    pool_off = imp_off - bought_off_before  # chưa phát sinh combo trong tháng đến trước ngày BC
+    pool_on = imp_on - bought_on_before
+    # TH ngày: CH trong pool có ĐH ngày BC
+    combo_off_th = len(pool_off & day_ch)
+    combo_on_th = len(pool_on & day_ch)
+    combo_off_mt = len(pool_off & _t7_ch)
+    combo_on_mt = len(pool_on & _t7_ch)
+    # % có TH → TH/Import; chưa TH → MT(T-7)/Import
+    combo_off_pct = _pct(combo_off_th if combo_off_th else combo_off_mt, len(imp_off))
+    combo_on_pct = _pct(combo_on_th if combo_on_th else combo_on_mt, len(imp_on))
 
     rows.append({
         'Tên NVBH': nv_name,
@@ -14387,8 +14415,8 @@ def build_muc_tieu_ngay(
   tot['LPPC %'] = f"{_pct(tot['LPPC TH'], tot['LPPC CT'])}%"
   tot['HV VIP %'] = f"{_pct(tot['HV VIP TH'], tot['HV VIP Active'])}%"
   tot['HV DAISU %'] = f"{_pct(tot['HV DAISU TH'], tot['HV DAISU Active'])}%"
-  tot['Combo OFF %'] = f"{_pct(tot['Combo OFF TH'], tot['Combo OFF Tham Gia'])}%"
-  tot['Combo ON %'] = f"{_pct(tot['Combo ON TH'], tot['Combo ON Tham Gia'])}%"
+  tot['Combo OFF %'] = f"{_pct(tot['Combo OFF TH'], tot['Combo OFF Import'])}%"
+  tot['Combo ON %'] = f"{_pct(tot['Combo ON TH'], tot['Combo ON Import'])}%"
   df_out = pd.concat([df_out, pd.DataFrame([tot])], ignore_index=True)
   return df_out
 
@@ -14508,12 +14536,22 @@ def render_muc_tieu_ngay_html(df):
         val = row.get(col, '')
         if pd.isna(val):
           val = ''
-        elif isinstance(val, float) and not isinstance(val, bool):
+        is_pct = (sub_lab == '%') or (isinstance(col, str) and '%' in col)
+        is_so_money = col in ('SO MT(T-7)', 'SO CT', 'SO TH')
+        if not is_pct and val != '':
           try:
-            val = int(val) if float(val).is_integer() else round(float(val), 2)
+            if isinstance(val, float) and not isinstance(val, bool):
+              if float(val).is_integer():
+                val = int(val)
+              else:
+                val = round(float(val), 2)
+            if is_so_money or (isinstance(val, (int, float)) and not isinstance(val, bool)
+                               and col.startswith('SO ')):
+              val = f'{int(round(float(val))):,}'.replace(',', '.')
+            elif isinstance(val, float) and not isinstance(val, bool):
+              val = int(val) if float(val).is_integer() else round(float(val), 2)
           except Exception:
             pass
-        is_pct = (sub_lab == '%') or (isinstance(col, str) and '%' in col)
         if is_pct:
           style_bg = color_pct_bg(val)
           cls = color_pct_class(val)
@@ -25770,12 +25808,12 @@ if _nav == '📊 BÁO CÁO KPI':
       with r2[3]:
         render_metric_card(
             'COMBO OFF',
-            f'{cb_off_th}/{cb_off_tg}/{_pct_card(cb_off_th, 0, cb_off_tg)}',
+            f'{cb_off_th}/{cb_off_imp}/{_pct_card(cb_off_th, 0, cb_off_imp)}',
         )
       with r2[4]:
         render_metric_card(
             'COMBO ON',
-            f'{cb_on_th}/{cb_on_tg}/{_pct_card(cb_on_th, 0, cb_on_tg)}',
+            f'{cb_on_th}/{cb_on_imp}/{_pct_card(cb_on_th, 0, cb_on_imp)}',
         )
       st.caption('Metric: TH/CT/% — Có TH ngày → % = TH/CT; chưa có TH → % = MT(T-7)/CT.')
 
