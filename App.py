@@ -14210,6 +14210,9 @@ def build_muc_tieu_ngay(
     # Chính xác hơn: CH thuộc plan ngày BC, first_date == rd
     th_aso_off = sum(1 for ma in plan_off if first_dates.get(ma) == rd)
     th_aso_on = sum(1 for ma in plan_on if first_dates.get(ma) == rd)
+    # MT (T-7): CH lịch VT ngày BC có đơn đầu tiên đúng T-7
+    mt_aso_off = sum(1 for ma in plan_off if first_dates.get(ma) == t7)
+    mt_aso_on = sum(1 for ma in plan_on if first_dates.get(ma) == t7)
     new_off = _ceil_pct(len(chua_off), 0.75)
     new_on = _ceil_pct(len(chua_on), 0.75)
 
@@ -14231,8 +14234,9 @@ def build_muc_tieu_ngay(
 
     # 4. LPPC
     lppc_th = _lppc_of(d_nv_day)
+    lppc_mt = _lppc_of(d_nv_t7)
     lppc_ct = 5.0
-    lppc_pct = _pct(lppc_th, lppc_ct)
+    lppc_pct = _pct(lppc_th if lppc_th else lppc_mt, lppc_ct)
 
     # 5. Hội Viên
     hv_vip_plan = (plan_off | plan_on) & hv_vip
@@ -14245,9 +14249,12 @@ def build_muc_tieu_ngay(
     day_ch = set(d_nv_day['_ma'].unique()) if not d_nv_day.empty else set()
     hv_vip_th = len((hv_vip_plan & day_ch))
     hv_daisu_th = len((hv_daisu_plan & day_ch))
-    # % so với Import (Chưa PSDS) theo user
-    hv_vip_pct = _pct(hv_vip_th, len(hv_vip_chua))
-    hv_daisu_pct = _pct(hv_daisu_th, len(hv_daisu_chua))
+    t7_ch = set(d_nv_t7['_ma'].unique()) if not d_nv_t7.empty else set()
+    hv_vip_mt = len((hv_vip_plan & t7_ch))
+    hv_daisu_mt = len((hv_daisu_plan & t7_ch))
+    # % = TH/CT(Active); chưa có TH → MT(T-7)/Active
+    hv_vip_pct = _pct(hv_vip_th if hv_vip_th else hv_vip_mt, hv_vip_active)
+    hv_daisu_pct = _pct(hv_daisu_th if hv_daisu_th else hv_daisu_mt, hv_daisu_active)
 
     # 6. Combo
     imp_off = (plan_off | plan_on) & combo_off_all  # theo kênh OFF list
@@ -14256,10 +14263,14 @@ def build_muc_tieu_ngay(
     imp_on = plan_on & combo_on_all
     tg_off = _ceil_pct(len(imp_off), 0.45)
     tg_on = _ceil_pct(len(imp_on), 0.35)
+    _t7_ch = set(d_nv_t7['_ma'].unique()) if not d_nv_t7.empty else set()
     combo_off_th = len(imp_off & day_ch)
     combo_on_th = len(imp_on & day_ch)
-    combo_off_pct = _pct(combo_off_th, len(imp_off))
-    combo_on_pct = _pct(combo_on_th, len(imp_on))
+    combo_off_mt = len(imp_off & _t7_ch)
+    combo_on_mt = len(imp_on & _t7_ch)
+    # % = TH/Tham Gia; chưa có TH → MT(T-7)/Tham Gia
+    combo_off_pct = _pct(combo_off_th if combo_off_th else combo_off_mt, tg_off)
+    combo_on_pct = _pct(combo_on_th if combo_on_th else combo_on_mt, tg_on)
 
     rows.append({
         'Tên NVBH': nv_name,
@@ -14270,11 +14281,11 @@ def build_muc_tieu_ngay(
         'ASO OFF New': new_off,
         'ASO OFF Chưa PSDS': len(chua_off),
         'ASO OFF TH': th_aso_off,
-        'ASO OFF %': f'{_pct(th_aso_off, new_off)}%',
+        'ASO OFF %': f'{_pct(th_aso_off if th_aso_off else mt_aso_off, new_off)}%',
         'ASO ON New': new_on,
         'ASO ON Chưa PSDS': len(chua_on),
         'ASO ON TH': th_aso_on,
-        'ASO ON %': f'{_pct(th_aso_on, new_on)}%',
+        'ASO ON %': f'{_pct(th_aso_on if th_aso_on else mt_aso_on, new_on)}%',
         'PC OFF T-7': len(pc_off_t7),
         'PC OFF Call Plan': cp_off,
         'PC OFF TH': len(pc_off_th),
@@ -14339,11 +14350,12 @@ def build_muc_tieu_ngay(
   tot['ASO ON %'] = f"{_pct(tot['ASO ON TH'], tot['ASO ON New'])}%"
   tot['PC OFF %'] = f"{_pct(tot['PC OFF TH'] if tot['PC OFF TH'] else tot['PC OFF T-7'], tot['PC OFF Call Plan'])}%"
   tot['PC ON %'] = f"{_pct(tot['PC ON TH'] if tot['PC ON TH'] else tot['PC ON T-7'], tot['PC ON Call Plan'])}%"
+  # % Total: có TH → TH/CT; chưa TH → giữ 0% (MT T-7 đã phản ánh trên từng dòng NV)
   tot['LPPC %'] = f"{_pct(tot['LPPC TH'], tot['LPPC CT'])}%"
-  tot['HV VIP %'] = f"{_pct(tot['HV VIP TH'], tot['HV VIP Chưa PSDS'])}%"
-  tot['HV DAISU %'] = f"{_pct(tot['HV DAISU TH'], tot['HV DAISU Chưa PSDS'])}%"
-  tot['Combo OFF %'] = f"{_pct(tot['Combo OFF TH'], tot['Combo OFF Import'])}%"
-  tot['Combo ON %'] = f"{_pct(tot['Combo ON TH'], tot['Combo ON Import'])}%"
+  tot['HV VIP %'] = f"{_pct(tot['HV VIP TH'], tot['HV VIP Active'])}%"
+  tot['HV DAISU %'] = f"{_pct(tot['HV DAISU TH'], tot['HV DAISU Active'])}%"
+  tot['Combo OFF %'] = f"{_pct(tot['Combo OFF TH'], tot['Combo OFF Tham Gia'])}%"
+  tot['Combo ON %'] = f"{_pct(tot['Combo ON TH'], tot['Combo ON Tham Gia'])}%"
   df_out = pd.concat([df_out, pd.DataFrame([tot])], ignore_index=True)
   return df_out
 
@@ -15029,20 +15041,19 @@ def build_performance_report(
     pct_off = round(len(pc_off) / len(da_off) * 100, 1) if da_off else 0.0
     pct_on = round(len(pc_on) / len(da_on) * 100, 1) if da_on else 0.0
 
-    # LPPC — cùng logic Báo Cáo LPPC KPI:
-    # trừ Meat/Beer, line đạt MOQ, PC ≥1 line MOQ, max 1 PC/CH/ngày (pick_best_pc_per_outlet_day)
-    # Scope Hiệu Suất: chỉ Kênh OFF (giữ cột LPPC OFF)
+    # LPPC Total — cùng logic Báo Cáo LPPC KPI (OFF+ON):
+    # trừ Meat/Beer, line đạt MOQ, PC ≥1 line MOQ, max 1 PC/CH/ngày
     d_off = (
         d_nv[d_nv['_ma'].map(lambda m: not _is_on(m))]
         if not d_nv.empty
         else pd.DataFrame()
     )
-    lppc_off = 0.0
+    lppc_off = 0.0  # biến giữ tên cũ trong code nội bộ; hiển thị = LPPC Total
     n_dh_off = 0
     n_line_off = 0
     try:
-      if not d_off.empty:
-        _d = d_off.copy()
+      _d = d_nv.copy() if not d_nv.empty else pd.DataFrame()
+      if not _d.empty:
         if 'Tên SP lower' not in _d.columns and 'Tên sản phẩm' in _d.columns:
           _d['Tên SP lower'] = _d['Tên sản phẩm'].astype(str).str.lower()
         if 'Mã NVBH' not in _d.columns and '_sm' in _d.columns:
@@ -15320,7 +15331,7 @@ def build_performance_report(
         'KO ĐH ON': len(ko_on),
         'PC Trái Tuyến ON': len(trai_on),
         'Tổng PC OFF (ĐH)': n_dh_off,
-        'LPPC OFF': lppc_off,
+        'LPPC Total': lppc_off,
         'CT Ngày SO': ct_ngay,
         'TH SO': int(round(th_so, 0)),
         '% TH SO': f'{pct_so}%',
@@ -15411,7 +15422,7 @@ def build_performance_report(
       'KO ĐH ON': _sum('KO ĐH ON'),
       'PC Trái Tuyến ON': _sum('PC Trái Tuyến ON'),
       'Tổng PC OFF (ĐH)': _sum('Tổng PC OFF (ĐH)'),
-      'LPPC OFF': _avg('LPPC OFF'),
+      'LPPC Total': _avg('LPPC Total'),
       'CT Ngày SO': tot_ct,
       'TH SO': tot_th,
       '% TH SO': f'{round(tot_th / tot_ct * 100, 1) if tot_ct else 0}%',
@@ -15470,7 +15481,7 @@ def _perf_table_html(df, section='call'):
         ]),
         ('LPPC', [
             ('Tổng PC OFF (ĐH)', 'Tổng PC OFF'),
-            ('LPPC OFF', 'LPPC OFF'),
+            ('LPPC Total', 'LPPC Total'),
         ]),
     ]
   else:
@@ -25733,7 +25744,7 @@ if _nav == '📊 BÁO CÁO KPI':
             'COMBO ON',
             f'{cb_on_th}/{cb_on_tg}/{_pct_card(cb_on_th, 0, cb_on_tg)}',
         )
-      st.caption('Metric: TH/CT/% — % dùng TH/CT khi đã có TH ngày; chưa có TH thì % = MT(T-7)/CT (PC/SO).')
+      st.caption('Metric: TH/CT/% — Có TH ngày → % = TH/CT; chưa có TH → % = MT(T-7)/CT.')
 
       st.markdown(render_muc_tieu_ngay_html(df_mtn), unsafe_allow_html=True)
       st.download_button(
