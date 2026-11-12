@@ -29,6 +29,35 @@ st.set_page_config(
 )
 
 
+# Mọi ô chọn nhiều (multiselect) có thêm lựa chọn "Tất cả" ở đầu: chọn "Tất cả" = chọn hết các lựa chọn.
+# Chỉ trên Streamlit thật — app native (headless, st._rec) tự có dòng "Tất cả" trong danh sách chọn.
+_MS_ALL = 'Tất cả'
+if not hasattr(st, '_rec') and not getattr(st.multiselect, '_with_all', False):
+  _st_multiselect_orig = st.multiselect
+
+  def _multiselect_with_all(label, options=(), default=None, *a, **k):
+    opts = list(options) if options is not None else []
+    if not opts or any(str(o).strip().lower().startswith('tất cả') for o in opts):
+      return _st_multiselect_orig(label, opts, default, *a, **k)
+    fmt = k.pop('format_func', None) or str
+    k['format_func'] = lambda o: _MS_ALL if (isinstance(o, str) and o == _MS_ALL) else fmt(o)
+    res = _st_multiselect_orig(label, [_MS_ALL] + opts, default, *a, **k)
+    if any(isinstance(x, str) and x == _MS_ALL for x in (res or [])):
+      return list(opts)
+    return res
+
+  _multiselect_with_all._with_all = True
+  st.multiselect = _multiselect_with_all
+
+
+def _ms_value(key, default):
+  """Giá trị ô chọn nhiều đọc từ session_state (đổi "Tất cả" → mọi lựa chọn)."""
+  v = st.session_state.get(key, default)
+  if isinstance(v, list) and any(isinstance(x, str) and x == _MS_ALL for x in v):
+    return list(default)
+  return v
+
+
 # Streamlit fragment (1.33+): bọc phần báo cáo để widget trong report ít rerun toàn trang
 def _maybe_fragment(fn):
   try:
@@ -887,6 +916,19 @@ def _read_sales_excel(path):
   return df.reset_index(drop=True)
 
 
+def _norm_mcp_cols(mcp):
+  """Data_MCP mẫu mới (T11) không còn cột 'VIP MCH' — nhóm VIP (LẺ / VIP3 / VIP5 / VIPSI) nằm ở
+  'Type Outlet2' / 'Type Outlet' → tạo lại cột 'VIP MCH' cho mọi báo cáo dùng chung."""
+  if mcp is None or mcp.empty or 'VIP MCH' in mcp.columns:
+    return mcp
+  for c in ('Type Outlet2', 'Type Outlet'):
+    if c in mcp.columns and mcp[c].astype(str).str.upper().str.contains('VIP', na=False).any():
+      mcp = mcp.copy()
+      mcp['VIP MCH'] = mcp[c]
+      break
+  return mcp
+
+
 @st.cache_data(ttl=600)
 def load_main_data(_month_key='Thang10'):
   """_month_key: cache riêng theo tháng."""
@@ -922,7 +964,7 @@ def load_main_data(_month_key='Thang10'):
       df = df.drop_duplicates(subset=_dedup_cols, keep='first')
   except Exception:
     pass
-  mcp = pd.read_excel(MCP_PATH)
+  mcp = _norm_mcp_cols(pd.read_excel(MCP_PATH))
 
   rename = {}
   for c in df.columns:
@@ -1795,7 +1837,8 @@ def filter_df_by_nv(df, col, filter_nv):
 def filter_by_thu_multi(df, col_thu, f_thu_list):
   if not f_thu_list or not col_thu:
     return df
-  thu_s = df[col_thu].astype(str).str.strip()
+  # Thứ dạng số thực ('4.0', '25.0' — vd Data_Brand mẫu mới) → '4', '25'
+  thu_s = df[col_thu].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
   mask = pd.Series(False, index=df.index)
 
   mapping_rules = {
@@ -7141,12 +7184,30 @@ def _render_detail_slicers_and_tables(
   # Lọc theo KPI (SP focus / L1 / trừ Meat-Beer…)
   df_src2 = _filter_df_for_kpi_order_detail(df_src, kpi_type) if kpi_type else df_src
 
-  # Build full (đầu tháng → ngày BC) rồi lọc bằng slicer
+  # Build full (đầu tháng → ngày BC) rồi lọc bằng slicer.
+  # App native (headless, st._rec): chỉ ngày BC; ngày data mới nhất xuất sẵn, ngày cũ tính khi bật ô xem
+  # (xuất cả tháng cho mọi ngày quá nặng: ~5MB/ngày/báo cáo, repo reports phình vài GB).
+  _rd_det = report_date.date() if hasattr(report_date, 'date') else report_date
+  _dl = None
+  if hasattr(st, '_rec'):
+    _dl = [_rd_det]
+    try:
+      _maxd = max(x for x in df_src['date'].dropna().tolist() if hasattr(x, 'year'))
+      _maxd = _maxd.date() if hasattr(_maxd, 'date') and callable(_maxd.date) else _maxd
+    except Exception:
+      _maxd = _rd_det
+    if _rd_det < _maxd:
+      # Ngày cũ: không xuất sẵn — bật ô này thì app nhờ GitHub tính (khoá kết thúc '__ondemand':
+      # filters_probe không tính sẵn biến thể, app gửi yêu cầu tính khi người dùng bật)
+      if not st.toggle(f'📋 Xem chi tiết ĐH / SP ngày {_rd_det.strftime("%d/%m/%Y")}', value=False,
+                       key=f'{key_prefix}__ondemand'):
+        st.caption('Bật ô trên để xem chi tiết đơn hàng / sản phẩm ngày này (GitHub tính khoảng 1–2 phút).')
+        return
   df_ord_all = build_turnover_order_detail(
-      df_src2, report_date, filter_nv, l1_filter=l1_fixed, date_list=None
+      df_src2, report_date, filter_nv, l1_filter=l1_fixed, date_list=_dl
   )
   df_sp_all = build_turnover_product_detail(
-      df_src2, report_date, filter_nv, l1_filter=l1_fixed, date_list=None
+      df_src2, report_date, filter_nv, l1_filter=l1_fixed, date_list=_dl
   )
   # Options từ data (bỏ dòng tổng)
   def _opts(frame, col):
@@ -9246,12 +9307,13 @@ def tag_all_orders_with_combo_flag(df_day, mcp_df=None):
   return d
 
 
-def combo_day_targets(df_master, df_visit, report_date):
-  """MT Ngày Combo: số CH trong DSKH Combo (OFF hoặc ON) có trên lịch VT đúng ngày BC → {Tên NV: số CH}."""
+def combo_day_targets(df_master, df_visit, report_date, as_set=False):
+  """MT Ngày Combo: số CH trong DSKH Combo (OFF hoặc ON) có trên lịch VT đúng ngày BC → {Tên NV: số CH}.
+  as_set=True → tập Mã CH đó (lọc 'Đã mua' chỉ tính CH đúng tuyến ngày)."""
   if (df_master is None or df_master.empty or df_visit is None or df_visit.empty
       or 'outlet_code' not in df_master.columns or 'Tên NV' not in df_master.columns
       or 'Mã Cửa hàng' not in df_visit.columns):
-    return {}
+    return set() if as_set else {}
   rd = report_date.date() if hasattr(report_date, 'date') else report_date
   if '_plan_date' in df_visit.columns:
     plan = df_visit['_plan_date']
@@ -9259,6 +9321,8 @@ def combo_day_targets(df_master, df_visit, report_date):
     plan = pd.to_datetime(df_visit.get('Ngày lịch VT'), dayfirst=True, errors='coerce').dt.date
   on_day = set(df_visit.loc[plan == rd, 'Mã Cửa hàng'].map(_norm_code))
   m = df_master[df_master['outlet_code'].map(_norm_code).isin(on_day)]
+  if as_set:
+    return set(m['outlet_code'].map(_norm_code))
   return m.groupby(m['Tên NV'].astype(str).str.strip())['outlet_code'].nunique().to_dict()
 
 
@@ -11902,6 +11966,33 @@ def build_summary_report(
               )
             except Exception:
               pass
+
+    # Xem theo ngày (lọc Thứ/Chu kỳ): Doanh Số, PC BT, PC ON = số THỰC HIỆN NGÀY BC của cả team (không lọc CH
+    # theo Thứ) — khớp Báo Cáo TURNOVER / PC BT / PC ON; CT ngày = CT tháng / số ngày làm việc (đã tính ở trên)
+    if effective_thu_list:
+      def _day_th(rep_df, c_th):
+        if rep_df is None or rep_df.empty or 'Tên NVBH' not in rep_df.columns or 'Thực Hiện Ngày' not in rep_df.columns:
+          return
+        body = rep_df[~rep_df['Tên NVBH'].astype(str).str.upper().str.contains('TOTAL|TỔNG', na=False, regex=True)]
+        th_map = {' '.join(str(n).strip().lower().split()): float(pd.to_numeric(v, errors='coerce') or 0)
+                  for n, v in zip(body['Tên NVBH'], body['Thực Hiện Ngày'])}
+        for i, nv in df_out['Tên NV'].astype(str).items():
+          df_out.at[i, c_th] = int(round(th_map.get(' '.join(nv.strip().lower().split()), 0.0)))
+      try:
+        _day_th(build_turnover_report(df, report_date, _to_tgt, filter_nv)[0], 'TH DS')
+      except Exception:
+        pass
+      for _rt, _c_th in (('PC_BT', 'TH PC_BT'), ('PC_ON', 'TH PC_ON')):
+        try:
+          _day_th(build_report(df, report_date, targets, _rt, filter_nv, mcp_df=mcp_df)[0], _c_th)
+        except Exception:
+          pass
+      for i, row in df_out.iterrows():
+        for c_ct, c_th, c_pct in (('CT DS', 'TH DS', '% MTD DS'), ('CT PC_BT', 'TH PC_BT', '% MTD PC_BT'),
+                                  ('CT PC_ON', 'TH PC_ON', '% MTD PC_ON')):
+          ct_use = float(row.get(c_ct, 0) or 0)
+          th0 = float(df_out.at[i, c_th] or 0)
+          df_out.at[i, c_pct] = f'{round(th0 / ct_use * 100, 1)}%' if ct_use else '0%'
 
     tot_v_tgt = int(df_out['VIP MCH'].sum())
     tot_v_act = int(df_out['Đã Mua (VIP)'].sum())
@@ -17089,7 +17180,8 @@ def build_perf_by_month(df_raw, filter_nv=None, n_months=6, df_rpt=None, report_
     except Exception:
       return (0, 0)
   months = sorted(d['_month'].dropna().unique().tolist(), key=_mk, reverse=True)
-  months = months[:n_months]
+  if n_months:
+    months = months[:n_months]
   # RPT sellout tháng T
   cur_m = _month_key_from_date(report_date) if report_date is not None else ''
   rpt_by_cat, _ = build_rpt_sellout_maps(df_rpt, report_date)
@@ -23304,9 +23396,7 @@ if _nav == '📊 BÁO CÁO KPI':
               label_visibility='collapsed',
           )
 
-      nhom_selected = st.session_state.get(
-          'mbs_cat_nhom_filter', [1, 2, 3, 4, 5, 6]
-      )
+      nhom_selected = _ms_value('mbs_cat_nhom_filter', [1, 2, 3, 4, 5, 6])
       if not nhom_selected:
         nhom_selected = [1, 2, 3, 4, 5, 6]
 
@@ -23604,9 +23694,7 @@ if _nav == '📊 BÁO CÁO KPI':
               label_visibility='collapsed',
           )
 
-      nhom_selected = st.session_state.get(
-          'mbs_brand_nhom_filter', [1, 2, 3, 4, 5, 6]
-      )
+      nhom_selected = _ms_value('mbs_brand_nhom_filter', [1, 2, 3, 4, 5, 6])
       if not nhom_selected:
         nhom_selected = [1, 2, 3, 4, 5, 6]
 
@@ -25066,7 +25154,7 @@ if _nav == '📊 BÁO CÁO KPI':
           'Upload lên GitHub rồi **Xóa Cache & Reload**.'
       )
     else:
-      data_by_m, months = build_perf_by_month(df_perf, filter_nv, n_months=6, df_rpt=df, report_date=report_date)
+      data_by_m, months = build_perf_by_month(df_perf, filter_nv, n_months=None, df_rpt=df, report_date=report_date)
       if not months:
         st.info('Không có dữ liệu tháng để hiển thị.')
       else:
@@ -26378,29 +26466,18 @@ if _nav == '📊 BÁO CÁO KPI':
       )
     f4, f5, f6 = st.columns(3)
     with f4:
-      st.markdown('<p class="filter-label">📅 Ngày ĐH (lịch tháng)</p>', unsafe_allow_html=True)
-      _rd = report_date.date() if hasattr(report_date, 'date') else report_date
-      _ms = date(_rd.year, _rd.month, 1)
-      try:
-        miss_f_ngay = st.date_input(
-            'miss_ngay',
-            value=(_ms, _rd),
-            min_value=_ms,
-            max_value=_rd,
-            format='DD/MM/YYYY',
-            key='combo_miss_ngay',
-            label_visibility='collapsed',
-        )
-      except Exception:
-        miss_f_ngay = st.date_input(
-            'miss_ngay',
-            value=_rd,
-            min_value=_ms,
-            max_value=_rd,
-            format='DD/MM/YYYY',
-            key='combo_miss_ngay',
-            label_visibility='collapsed',
-        )
+      st.markdown('<p class="filter-label">📅 Ngày ĐH</p>', unsafe_allow_html=True)
+      # Chọn ngày như ô chọn ngày xem báo cáo (chọn nhiều; trống = cả tháng tới ngày BC) — app native lọc được
+      _miss_days = []
+      if not _miss_all.empty and 'Ngày ĐH' in _miss_all.columns:
+        _dd = pd.to_datetime(_miss_all['Ngày ĐH'].astype(str).str[:10], dayfirst=True, errors='coerce').dropna()
+        _miss_days = [x.strftime('%d/%m/%Y') for x in sorted(set(_dd.dt.normalize()), reverse=True)]
+      # mặc định chọn sẵn ngày T-1 (nếu ngày đó có đơn); bỏ chọn = cả tháng
+      _t1 = default_date_t_minus_1.strftime('%d/%m/%Y')
+      miss_f_ngay = st.multiselect(
+          'miss_ngay', _miss_days, default=[_t1] if _t1 in _miss_days else [], placeholder='Tất cả ngày',
+          key='combo_miss_ngay_list', label_visibility='collapsed',
+      )
     with f5:
       st.markdown('<p class="filter-label">🏷️ L1</p>', unsafe_allow_html=True)
       miss_f_l1 = st.multiselect(
@@ -26420,8 +26497,10 @@ if _nav == '📊 BÁO CÁO KPI':
         out = out[out['Mã KH'].astype(str).str.strip().isin(miss_f_ma)]
       if miss_f_ten and 'Tên KH' in out.columns:
         out = out[out['Tên KH'].astype(str).str.strip().isin(miss_f_ten)]
-      # Ngày ĐH: lịch tháng (range hoặc 1 ngày)
-      if miss_f_ngay is not None and 'Ngày ĐH' in out.columns:
+      # Ngày ĐH: các ngày đã chọn (dd/mm/yyyy, ô Ngày ĐH có thể kèm giờ)
+      if miss_f_ngay and isinstance(miss_f_ngay, list) and isinstance(miss_f_ngay[0], str) and 'Ngày ĐH' in out.columns:
+        out = out[out['Ngày ĐH'].astype(str).str.strip().str[:10].isin(miss_f_ngay)]
+      elif miss_f_ngay and not isinstance(miss_f_ngay, list) and 'Ngày ĐH' in out.columns:
         try:
           if isinstance(miss_f_ngay, (list, tuple)) and len(miss_f_ngay) == 2:
             d0, d1 = miss_f_ngay[0], miss_f_ngay[1]
