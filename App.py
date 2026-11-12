@@ -12156,6 +12156,160 @@ def render_summary_html_table(df, selected_metrics):
 
 
 
+
+def render_aso_focus_html(df):
+  """ASO Focus Trận Xanh — header 2 tầng:
+  Tầng 1: KÊNH OFF | KÊNH ON | TOTAL
+  Tầng 2: Chỉ Tiêu · Thực Hiện · MTD · % MTD
+  """
+  if df is None or getattr(df, 'empty', True):
+    return '<p style="color:#718096;">Không có dữ liệu ASO Focus Trận Xanh.</p>'
+  df = df.drop(columns=['Mã NVBH'], errors='ignore').copy()
+
+  # (label hiển thị, tên cột data)
+  off_cols = [
+      ('Chỉ Tiêu', 'Chỉ Tiêu KPI'),
+      ('Thực Hiện', 'Thực Hiện Ngày OFF'),
+      ('MTD', 'MTD OFF'),
+      ('% MTD', '% MTD OFF'),
+  ]
+  on_cols = [
+      ('Chỉ Tiêu', 'Chỉ Tiêu KPI'),
+      ('Thực Hiện', 'Thực Hiện Ngày ON'),
+      ('MTD', 'MTD ON'),
+      ('% MTD', '% MTD ON'),
+  ]
+  total_cols = [
+      ('Chỉ Tiêu', 'Chỉ Tiêu KPI'),
+      ('Thực Hiện', 'Thực Hiện Ngày'),
+      ('MTD', 'MTD'),
+      ('% MTD', '% MTD'),
+  ]
+  # Nếu có GAP / BQ thì gắn thêm vào TOTAL
+  extra_total = []
+  if 'GAP' in df.columns:
+    extra_total.append(('GAP', 'GAP'))
+  if 'Bình quân ngày' in df.columns:
+    extra_total.append(('BQ Ngày', 'Bình quân ngày'))
+  total_cols = total_cols + extra_total
+
+  groups = [
+      ('KÊNH OFF', off_cols),
+      ('KÊNH ON', on_cols),
+      ('TOTAL', total_cols),
+  ]
+  groups = [(lab, [(a, b) for a, b in cols if b in df.columns]) for lab, cols in groups]
+  groups = [(lab, cols) for lab, cols in groups if cols]
+
+  max_name = 12
+  if 'Tên NVBH' in df.columns:
+    for n in df['Tên NVBH'].astype(str):
+      max_name = max(max_name, len(n))
+  name_w = max(150, min(260, max_name * 9 + 24))
+  stt_w = 48
+  sh = 'box-shadow:3px 0 5px -2px rgba(0,0,0,.22);'
+  th = (
+      'background-color:#1a365d !important;color:#ffffff !important;'
+      'font-weight:800 !important;text-align:center !important;'
+      'border:1px solid #2b6cb0 !important;padding:6px 8px;white-space:nowrap;'
+  )
+  th_sub = (
+      'background-color:#2c5282 !important;color:#ffffff !important;'
+      'font-weight:700 !important;text-align:center !important;'
+      'border:1px solid #2b6cb0 !important;padding:5px 6px;white-space:nowrap;'
+  )
+  td = (
+      'border:1px solid #bce2f5 !important;padding:5px 6px;'
+      'text-align:center !important;white-space:nowrap;'
+  )
+
+  html = [
+      '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:8px;">',
+      '<table class="custom-kpi-table" style="border-collapse:separate;border-spacing:0;'
+      'width:max-content;min-width:100%;">',
+      '<thead>',
+      '<tr>',
+      f'<th rowspan="2" style="{th}position:sticky;left:0;z-index:8;min-width:{stt_w}px;{sh}">STT</th>',
+      f'<th rowspan="2" style="{th}position:sticky;left:{stt_w}px;z-index:8;min-width:{name_w}px;{sh}">Tên NVBH</th>',
+  ]
+  for lab, cols in groups:
+    html.append(f'<th colspan="{len(cols)}" style="{th}">{lab}</th>')
+  html.append('</tr><tr>')
+  for _lab, cols in groups:
+    for sub_lab, _c in cols:
+      html.append(f'<th style="{th_sub}">{sub_lab}</th>')
+  html.append('</tr></thead><tbody>')
+
+  n_rows = len(df)
+  for pos, (_, row) in enumerate(df.iterrows()):
+    ten_u = str(row.get('Tên NVBH', '')).upper()
+    stt_s = str(row.get('STT', '')).strip()
+    is_tot = (
+        'TOTAL' in ten_u or 'TỔNG' in ten_u
+        or (stt_s in ('-', '') and pos == n_rows - 1)
+    )
+    bg = '#1a365d' if is_tot else ('#e6f4fc' if pos % 2 == 0 else '#ffffff')
+    fg = '#ffffff' if is_tot else '#1a202c'
+    html.append('<tr' + (' class="row-total"' if is_tot else '') + '>')
+
+    stt = row.get('STT', '')
+    if pd.isna(stt):
+      stt = ''
+    html.append(
+        f'<td style="{td}position:sticky;left:0;z-index:{"7" if is_tot else "5"};'
+        f'min-width:{stt_w}px;background-color:{bg} !important;color:{fg} !important;'
+        f'font-weight:{"900" if is_tot else "400"};{sh}">{stt}</td>'
+    )
+    ten = row.get('Tên NVBH', '')
+    if pd.isna(ten):
+      ten = ''
+    html.append(
+        f'<td style="{td}position:sticky;left:{stt_w}px;z-index:{"7" if is_tot else "5"};'
+        f'min-width:{name_w}px;background-color:{bg} !important;color:{fg} !important;'
+        f'text-align:left !important;font-weight:{"900" if is_tot else "600"};{sh}">{ten}</td>'
+    )
+
+    for _lab, cols in groups:
+      for sub_lab, col in cols:
+        val = row.get(col, '')
+        if pd.isna(val):
+          val = ''
+        elif isinstance(val, (float, int)) and not isinstance(val, bool):
+          try:
+            if float(val).is_integer():
+              val = int(val)
+            else:
+              val = round(float(val), 2)
+          except Exception:
+            pass
+
+        is_pct = (sub_lab == '% MTD') or (isinstance(col, str) and col.strip().startswith('%'))
+        if is_pct and not is_tot:
+          style_bg = color_pct_bg(val)
+          cls = color_pct_class(val)
+          html.append(
+              f'<td data-colored="1" class="{cls}" '
+              f'style="{style_bg}text-align:center !important;font-weight:700 !important;'
+              f'white-space:nowrap;border:1px solid #bce2f5 !important;">{val}</td>'
+          )
+        elif is_pct and is_tot:
+          style_bg = color_pct_bg(val)
+          cls = color_pct_class(val)
+          html.append(
+              f'<td data-colored="1" class="{cls} row-total-cell" '
+              f'style="{style_bg}font-weight:900 !important;text-align:center !important;'
+              f'white-space:nowrap;">{val}</td>'
+          )
+        else:
+          html.append(
+              f'<td style="{td}background-color:{bg} !important;color:{fg} !important;'
+              f'font-weight:{"900" if is_tot else "800"};">{val}</td>'
+          )
+    html.append('</tr>')
+  html.append('</tbody></table></div>')
+  return ''.join(html)
+
+
 def render_aso_all_html(df):
   """Bảng ASO ALL — header 2 dòng:
   Hàng 1: Total MCP | MCP Kênh OFF | MCP Kênh ON
@@ -24933,6 +25087,8 @@ if _nav == '📊 BÁO CÁO KPI':
       )
     if selected_kpi == 'ASO_ALL':
       st.markdown(render_aso_all_html(_df_show), unsafe_allow_html=True)
+    elif selected_kpi == 'ASO_FOCUS':
+      st.markdown(render_aso_focus_html(_df_show), unsafe_allow_html=True)
     else:
       st.markdown(render_html_table(_df_show), unsafe_allow_html=True)
 # ---- Bảng theo nhóm LẺ / VIP3 / VIP5 / VIPSI ----
