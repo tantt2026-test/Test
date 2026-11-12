@@ -14335,9 +14335,9 @@ def build_muc_tieu_ngay(
 
     rows.append({
         'Tên NVBH': nv_name,
-        'SO MT(T-7)': int(round(so_mt)),
-        'SO CT': so_ct,
-        'SO TH': int(round(so_th)),
+        'SO MT(T-7)': int(round(so_mt / 1000.0)),
+        'SO CT': int(round(so_ct / 1000.0)),
+        'SO TH': int(round(so_th / 1000.0)),
         'SO %': f'{so_pct}%',
         'ASO OFF New': new_off,
         'ASO OFF Chưa PSDS': len(chua_off),
@@ -14428,7 +14428,7 @@ def render_muc_tieu_ngay_html(df):
   df = df.copy()
 
   groups = [
-      ('SO TURNOVER', [
+      ('SO TURNOVER (÷1.000)', [
           ('MT (T-7)', 'SO MT(T-7)'), ('CT Ngày', 'SO CT'),
           ('TH', 'SO TH'), ('%', 'SO %'),
       ]),
@@ -25830,7 +25830,7 @@ if _nav == '📊 BÁO CÁO KPI':
           <div class="note-box">
             <div style="font-weight:800;color:#034ea2;margin-bottom:6px;font-size:13px;">📌 LOGIC MỤC TIÊU NGÀY</div>
             <ul style="margin:0;padding-left:18px;line-height:1.55;font-size:12.5px;">
-              <li><b>SO:</b> MT = DS ngày T-7 · CT = Target tháng / số ngày làm việc · TH = DS ngày chọn · % = TH/CT.</li>
+              <li><b>SO:</b> MT = DS ngày T-7 · CT = Target tháng / số ngày làm việc · TH = DS ngày chọn · % = TH/CT. <i>Số liệu SO đã ÷ 1.000 (đơn vị nghìn đồng).</i></li>
               <li><b>ASO OFF/ON:</b> Chưa PSDS = CH lịch VT ngày chọn chưa có ĐH từ đầu tháng → ngày BC · New ASO = Chưa PSDS × 75% · TH = CH lịch VT có đơn đầu tiên đúng ngày BC.</li>
               <li><b>PC/VT:</b> Call Plan = số CH lịch VT ngày chọn · PC T-7 = số CH có ĐH ngày T-7 · TH = PC ngày chọn · % = TH/Call Plan.</li>
               <li><b>LPPC:</b> CT = 5.0 · TH = LPPC (trừ Meat/Beer) ngày chọn · % = TH/5.0.</li>
