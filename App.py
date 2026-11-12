@@ -455,12 +455,14 @@ st.markdown(
 )
 
 
-def render_metric_card(label, value):
+def render_metric_card(label, value, icon='', value_color='#034ea2'):
+  """Metric card. value_color mặc định xanh dương đậm (#034ea2)."""
+  _icon = f'{icon} ' if icon else ''
   st.markdown(
       f"""
-    <div style="background: #ebf8ff; border: 1px solid #bee3f8; border-radius: 6px; padding: 8px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.04); margin-bottom: 6px;">
-        <div style="color: #c53030; font-weight: 800; font-size: 0.95rem; margin-bottom: 2px;">{label}</div>
-        <div style="color: #c53030; font-weight: 800; font-size: 1.5rem;">{value}</div>
+    <div style="background: #ebf8ff; border: 1px solid #bee3f8; border-radius: 8px; padding: 10px 8px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.04); margin-bottom: 6px;">
+        <div style="color: #c53030; font-weight: 800; font-size: 0.95rem; margin-bottom: 4px;">{_icon}{label}</div>
+        <div style="color: {value_color}; font-weight: 900; font-size: 1.45rem; letter-spacing: 0.2px;">{value}</div>
     </div>
     """,
       unsafe_allow_html=True,
@@ -22577,7 +22579,7 @@ if _nav == '📊 BÁO CÁO KPI':
       df_new_on = pd.DataFrame()
     st.markdown(
         f'<h3 style="color:#034ea2;font-weight:800;margin-bottom:4px;'
-        f'font-size:16px;text-align:center;">TẠO MỚI KÊNH ON - CHUYÊN BEV'
+        f'font-size:64px;text-align:center;line-height:1.15;">TẠO MỚI KÊNH ON - CHUYÊN BEV'
         f' — THÁNG {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -23120,7 +23122,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 4px;'
-        f' font-size: 16px; text-align: center;">BÁO CÁO TỔNG HỢP MBS CAT'
+        f' font-size: 64px; text-align: center; line-height: 1.15;">BÁO CÁO TỔNG HỢP MBS CAT'
         f' - 6 NHÓM</h3>',
         unsafe_allow_html=True,
     )
@@ -23431,7 +23433,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 4px;'
-        f' font-size: 16px; text-align: center;">BÁO CÁO TỔNG HỢP {_bn}'
+        f' font-size: 64px; text-align: center; line-height: 1.15;">BÁO CÁO TỔNG HỢP {_bn}'
         f' - 6 NHÓM</h3>',
         unsafe_allow_html=True,
     )
@@ -23969,7 +23971,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 2px;'
-        f' font-size: 16px; text-align: center;">BÁO CÁO LỊCH VIẾNG THĂM & % ACTIVE'
+        f' font-size: 64px; text-align: center; line-height: 1.15;">BÁO CÁO LỊCH VIẾNG THĂM & % ACTIVE'
         f' {wname} ({week_type} - Tuần {iso_week}) - {report_date.strftime("%d/%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -24029,7 +24031,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
-        f' font-size: 16px; text-align: center;">{title} - THÁNG'
+        f' font-size: 64px; text-align: center; line-height: 1.15;">{title} - THÁNG'
         f' {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -24179,7 +24181,7 @@ if _nav == '📊 BÁO CÁO KPI':
           df, mcp, df_visit_sched, report_date, turnover_targets, filter_nv
       )
       st.markdown(
-          f'<h3 style="color:#034ea2;font-weight:800;text-align:center;">'
+          f'<h3 style="color:#034ea2;font-weight:800;text-align:center;font-size:64px;line-height:1.15;">'
           f'{title_perf} - {report_date.strftime("%d/%m/%Y")}</h3>',
           unsafe_allow_html=True,
       )
@@ -25705,7 +25707,7 @@ if _nav == '📊 BÁO CÁO KPI':
       except Exception:
         _df_brand_mt = None
     st.markdown(
-        f'<h3 style="color:#034ea2;font-weight:800;margin-bottom:4px;font-size:16px;text-align:center;">'
+        f'<h3 style="color:#034ea2;font-weight:800;margin-bottom:4px;font-size:64px;text-align:center;line-height:1.15;">'
         f'MỤC TIÊU NGÀY — {report_date.strftime("%d/%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -25768,52 +25770,62 @@ if _nav == '📊 BÁO CÁO KPI':
         render_metric_card(
             'SO TURNOVER',
             f'{so_th:,}/{so_ct:,}/{_pct_card(so_th, so_mt, so_ct)}'.replace(',', '.'),
+            icon='💰', value_color='#034ea2',
         )
       with r1[1]:
         render_metric_card(
             'ASO OFF',
             f'{aso_off_th}/{aso_off_new}/{_pct_card(aso_off_th, 0, aso_off_new)}',
+            icon='🏪', value_color='#034ea2',
         )
       with r1[2]:
         render_metric_card(
             'ASO ON',
             f'{aso_on_th}/{aso_on_new}/{_pct_card(aso_on_th, 0, aso_on_new)}',
+            icon='🛒', value_color='#034ea2',
         )
       with r1[3]:
         render_metric_card(
             'PC/VT OFF',
             f'{pc_off_th}/{pc_off_cp}/{_pct_card(pc_off_th, pc_off_t7, pc_off_cp)}',
+            icon='📋', value_color='#034ea2',
         )
       with r1[4]:
         render_metric_card(
             'PC/VT ON',
             f'{pc_on_th}/{pc_on_cp}/{_pct_card(pc_on_th, pc_on_t7, pc_on_cp)}',
+            icon='📱', value_color='#034ea2',
         )
       r2 = st.columns(5)
       with r2[0]:
         render_metric_card(
             'LPPC',
             f'{lppc_th}/{lppc_ct}/{_pct_card(lppc_th, 0, lppc_ct)}',
+            icon='📊', value_color='#034ea2',
         )
       with r2[1]:
         render_metric_card(
             'HV BRAND_VIP',
             f'{hv_v_th}/{hv_v_act}/{_pct_card(hv_v_th, 0, hv_v_act)}',
+            icon='👑', value_color='#034ea2',
         )
       with r2[2]:
         render_metric_card(
             'HV VIPDAISU',
             f'{hv_d_th}/{hv_d_act}/{_pct_card(hv_d_th, 0, hv_d_act)}',
+            icon='⭐', value_color='#034ea2',
         )
       with r2[3]:
         render_metric_card(
             'COMBO OFF',
             f'{cb_off_th}/{cb_off_imp}/{_pct_card(cb_off_th, 0, cb_off_imp)}',
+            icon='🎁', value_color='#034ea2',
         )
       with r2[4]:
         render_metric_card(
             'COMBO ON',
             f'{cb_on_th}/{cb_on_imp}/{_pct_card(cb_on_th, 0, cb_on_imp)}',
+            icon='🎯', value_color='#034ea2',
         )
       st.caption('Metric: TH/CT/% — Có TH ngày → % = TH/CT; chưa có TH → % = MT(T-7)/CT.')
 
@@ -25859,7 +25871,7 @@ if _nav == '📊 BÁO CÁO KPI':
     pct_team = total_row[pct_col]
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
-        f' font-size: 16px; text-align: center;">{title} - THÁNG'
+        f' font-size: 64px; text-align: center; line-height: 1.15;">{title} - THÁNG'
         f' {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
@@ -26147,7 +26159,7 @@ if _nav == '📊 BÁO CÁO KPI':
 
     st.markdown(
         f'<h3 style="color: #034ea2; font-weight: 800; margin-bottom: 0px;'
-        f' font-size: 16px; text-align: center;">BÁO CÁO ĐH COMBO (MATRIX OFF/ON) - THÁNG'
+        f' font-size: 64px; text-align: center; line-height: 1.15;">BÁO CÁO ĐH COMBO (MATRIX OFF/ON) - THÁNG'
         f' {report_date.strftime("%m/%Y")}</h3>',
         unsafe_allow_html=True,
     )
