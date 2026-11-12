@@ -12159,33 +12159,35 @@ def render_summary_html_table(df, selected_metrics):
 
 def render_aso_focus_html(df):
   """ASO Focus Trận Xanh — header 2 tầng:
+  Cột cố định: STT | Tên NVBH | Chỉ Tiêu (chung)
   Tầng 1: KÊNH OFF | KÊNH ON | TOTAL
-  Tầng 2: Chỉ Tiêu · Thực Hiện · MTD · % MTD
+  Tầng 2: Thực Hiện · MTD · % MTD
   """
   if df is None or getattr(df, 'empty', True):
     return '<p style="color:#718096;">Không có dữ liệu ASO Focus Trận Xanh.</p>'
   df = df.drop(columns=['Mã NVBH'], errors='ignore').copy()
 
-  # (label hiển thị, tên cột data)
+  # Chỉ Tiêu chung — cột riêng sau Tên NVBH
+  ct_col = 'Chỉ Tiêu KPI' if 'Chỉ Tiêu KPI' in df.columns else (
+      'Chỉ Tiêu' if 'Chỉ Tiêu' in df.columns else None
+  )
+
+  # (label hiển thị, tên cột data) — không còn Chỉ Tiêu trong nhóm
   off_cols = [
-      ('Chỉ Tiêu', 'Chỉ Tiêu KPI'),
       ('Thực Hiện', 'Thực Hiện Ngày OFF'),
       ('MTD', 'MTD OFF'),
       ('% MTD', '% MTD OFF'),
   ]
   on_cols = [
-      ('Chỉ Tiêu', 'Chỉ Tiêu KPI'),
       ('Thực Hiện', 'Thực Hiện Ngày ON'),
       ('MTD', 'MTD ON'),
       ('% MTD', '% MTD ON'),
   ]
   total_cols = [
-      ('Chỉ Tiêu', 'Chỉ Tiêu KPI'),
       ('Thực Hiện', 'Thực Hiện Ngày'),
       ('MTD', 'MTD'),
       ('% MTD', '% MTD'),
   ]
-  # Nếu có GAP / BQ thì gắn thêm vào TOTAL
   extra_total = []
   if 'GAP' in df.columns:
     extra_total.append(('GAP', 'GAP'))
@@ -12207,6 +12209,7 @@ def render_aso_focus_html(df):
       max_name = max(max_name, len(n))
   name_w = max(150, min(260, max_name * 9 + 24))
   stt_w = 48
+  ct_w = 88
   sh = 'box-shadow:3px 0 5px -2px rgba(0,0,0,.22);'
   th = (
       'background-color:#1a365d !important;color:#ffffff !important;'
@@ -12232,6 +12235,11 @@ def render_aso_focus_html(df):
       f'<th rowspan="2" style="{th}position:sticky;left:0;z-index:8;min-width:{stt_w}px;{sh}">STT</th>',
       f'<th rowspan="2" style="{th}position:sticky;left:{stt_w}px;z-index:8;min-width:{name_w}px;{sh}">Tên NVBH</th>',
   ]
+  # Chỉ Tiêu chung — rowspan 2, ngay sau Tên NVBH
+  if ct_col:
+    html.append(
+        f'<th rowspan="2" style="{th}min-width:{ct_w}px;">Chỉ Tiêu</th>'
+    )
   for lab, cols in groups:
     html.append(f'<th colspan="{len(cols)}" style="{th}">{lab}</th>')
   html.append('</tr><tr>')
@@ -12268,6 +12276,21 @@ def render_aso_focus_html(df):
         f'min-width:{name_w}px;background-color:{bg} !important;color:{fg} !important;'
         f'text-align:left !important;font-weight:{"900" if is_tot else "600"};{sh}">{ten}</td>'
     )
+
+    # Chỉ Tiêu chung
+    if ct_col:
+      val = row.get(ct_col, '')
+      if pd.isna(val):
+        val = ''
+      elif isinstance(val, (float, int)) and not isinstance(val, bool):
+        try:
+          val = int(val) if float(val).is_integer() else round(float(val), 2)
+        except Exception:
+          pass
+      html.append(
+          f'<td style="{td}background-color:{bg} !important;color:{fg} !important;'
+          f'font-weight:{"900" if is_tot else "800"};">{val}</td>'
+      )
 
     for _lab, cols in groups:
       for sub_lab, col in cols:
