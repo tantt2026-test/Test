@@ -14240,23 +14240,25 @@ def build_muc_tieu_ngay(
     # MCP visit day
     plan_off, plan_on = _mcp_ch_sets(nv_name)
 
-    # PSDS của NV đến ngày BC
-    psds_nv = set(d_nv_mtd['_ma'].unique()) if not d_nv_mtd.empty else set()
-    chua_off = plan_off - psds_nv
-    chua_on = plan_on - psds_nv
-    # TH ASO: CH trong plan chưa PSDS trước ngày BC nhưng có ĐH đúng ngày BC
-    # = first order day == rd
+    # PSDS trước ngày BC (không gồm ngày đang xem) → pool Chưa phát sinh
+    d_before = d_nv[(d_nv['date'] >= month_start) & (d_nv['date'] < rd)] if not d_nv.empty else d_nv
+    psds_before = set(d_before['_ma'].unique()) if not d_before.empty else set()
+    chua_off = plan_off - psds_before
+    chua_on = plan_on - psds_before
+    # first_date trong tháng đến hết ngày BC (để biết CH mới active đúng ngày BC)
     first_dates = {}
     if not d_nv_mtd.empty:
       first_dates = d_nv_mtd.groupby('_ma')['date'].min().to_dict()
-    th_aso_off = sum(1 for ma in chua_off | (plan_off & set(first_dates)) if first_dates.get(ma) == rd and ma in plan_off)
-    # Chính xác hơn: CH thuộc plan ngày BC, first_date == rd
-    # TH chỉ trên danh sách Chưa PSDS (không lấy total CH có ĐH trong ngày)
-    th_aso_off = sum(1 for ma in chua_off if first_dates.get(ma) == rd)
-    th_aso_on = sum(1 for ma in chua_on if first_dates.get(ma) == rd)
-    # MT (T-7): trong pool Chưa PSDS (tính tại ngày BC) có first_date = T-7
-    mt_aso_off = sum(1 for ma in chua_off if first_dates.get(ma) == t7)
-    mt_aso_on = sum(1 for ma in chua_on if first_dates.get(ma) == t7)
+    day_ch = set(d_nv_day['_ma'].unique()) if not d_nv_day.empty else set()
+    # TH = CH thuộc pool Chưa PSDS có ĐH đúng ngày BC (first_date == rd hoặc có trong day_ch)
+    th_aso_off = sum(1 for ma in chua_off if first_dates.get(ma) == rd or ma in day_ch)
+    # Chỉ đếm CH thực sự có ĐH ngày BC trong pool chưa PSDS
+    th_aso_off = len(chua_off & day_ch)
+    th_aso_on = len(chua_on & day_ch)
+    # MT (T-7): CH trong pool Chưa PSDS có ĐH ngày T-7
+    t7_ch = set(d_nv_t7['_ma'].unique()) if not d_nv_t7.empty else set()
+    mt_aso_off = len(chua_off & t7_ch)
+    mt_aso_on = len(chua_on & t7_ch)
     new_off = _ceil_pct(len(chua_off), 0.75)
     new_on = _ceil_pct(len(chua_on), 0.75)
 
@@ -14285,16 +14287,14 @@ def build_muc_tieu_ngay(
     # 5. Hội Viên
     hv_vip_plan = (plan_off | plan_on) & hv_vip
     hv_daisu_plan = (plan_off | plan_on) & hv_daisu
-    hv_vip_chua = hv_vip_plan - psds_nv
-    hv_daisu_chua = hv_daisu_plan - psds_nv
+    # Chưa PSDS = plan HV − đã có DS trước ngày BC
+    hv_vip_chua = hv_vip_plan - psds_before
+    hv_daisu_chua = hv_daisu_plan - psds_before
     hv_vip_active = _ceil_pct(len(hv_vip_chua), 0.80)
     hv_daisu_active = _ceil_pct(len(hv_daisu_chua), 0.80)
-    # TH: CH trong plan HV có first_date == rd hoặc có ĐH ngày BC
-    day_ch = set(d_nv_day['_ma'].unique()) if not d_nv_day.empty else set()
-    # TH chỉ trên Chưa PSDS (HV plan ngày VT ∩ chưa có DS tháng)
+    # TH chỉ trên pool Chưa PSDS có ĐH ngày BC
     hv_vip_th = len(hv_vip_chua & day_ch)
     hv_daisu_th = len(hv_daisu_chua & day_ch)
-    t7_ch = set(d_nv_t7['_ma'].unique()) if not d_nv_t7.empty else set()
     hv_vip_mt = len(hv_vip_chua & t7_ch)
     hv_daisu_mt = len(hv_daisu_chua & t7_ch)
     # % = TH/Active; chưa có TH → MT(T-7)/Active
@@ -15401,7 +15401,7 @@ def build_performance_report(
         '% PC/Plan ON': f'{pct_on}%',
         'KO ĐH ON': len(ko_on),
         'PC Trái Tuyến ON': len(trai_on),
-        'Tổng PC OFF (ĐH)': n_dh_off,
+        'Total PC': len(pc_off | pc_on) if (pc_off or pc_on) else (len(set(d_nv['_ma'].unique())) if not d_nv.empty else 0),
         'LPPC Total': lppc_off,
         'CT Ngày SO': ct_ngay,
         'TH SO': int(round(th_so, 0)),
@@ -15492,7 +15492,7 @@ def build_performance_report(
       '% PC/Plan ON': f'{round(tot_pc_on / tot_da_on * 100, 1) if tot_da_on else 0}%',
       'KO ĐH ON': _sum('KO ĐH ON'),
       'PC Trái Tuyến ON': _sum('PC Trái Tuyến ON'),
-      'Tổng PC OFF (ĐH)': _sum('Tổng PC OFF (ĐH)'),
+      'Total PC': _sum('Total PC'),
       'LPPC Total': _avg('LPPC Total'),
       'CT Ngày SO': tot_ct,
       'TH SO': tot_th,
@@ -15551,7 +15551,7 @@ def _perf_table_html(df, section='call'):
             ('PC Trái Tuyến ON', 'PC Trái Tuyến'),
         ]),
         ('LPPC', [
-            ('Tổng PC OFF (ĐH)', 'Tổng PC OFF'),
+            ('Total PC', 'Total PC'),
             ('LPPC Total', 'LPPC Total'),
         ]),
     ]
